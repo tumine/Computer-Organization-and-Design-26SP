@@ -5,6 +5,7 @@
 ~$*.pptx
 ~$*.xls
 ~$*.xlsx
+~WRL*.tmp
 
 # Verilog simulation generated files
 *.vcd
@@ -23,3 +24,9 @@ Desktop.ini
 # Build directories
 build/
 bin/
+
+# C/C++ local build outputs
+*.exe
+*.obj
+*.o
+*.pdb
