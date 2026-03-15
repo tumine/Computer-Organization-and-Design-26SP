@@ -1,0 +1,25 @@
+# Office temporary files
+~$*.doc
+~$*.docx
+~$*.ppt
+~$*.pptx
+~$*.xls
+~$*.xlsx
+
+# Verilog simulation generated files
+*.vcd
+*.vvp
+*.out
+*~
+
+# OS specific files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editors
+.vscode/
+
+# Build directories
+build/
+bin/
