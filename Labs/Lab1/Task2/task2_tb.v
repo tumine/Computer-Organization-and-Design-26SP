@@ -14,12 +14,12 @@ module memory_compare_tb();
         .a(addr), .d(din), .clk(clk), .we(we), .spo(dout_dist)
     );
 
-    // 实例化 Block RAM（写优先）
+    // 实例化 Block RAM（写优先，ENA Pin 始终启用）
     blk_mem_gen_0 blk_mem_wfirst (
         .clka(clk), .wea(we), .addra(addr), .dina(din), .douta(dout_block_wfirst)
     );
 
-    // 实例化 Block RAM（读优先）
+    // 实例化 Block RAM（读优先，ENA Pin 始终启用）
     blk_mem_gen_1 blk_mem_rfirst (
         .clka(clk), .wea(we), .addra(addr), .dina(din), .douta(dout_block_rfirst)
     );
