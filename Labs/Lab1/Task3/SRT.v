@@ -25,18 +25,20 @@ module dual_port_bram #(
 
     initial begin
         // 使用 .txt 文件进行初始化
-        $readmemh("attachments/data.txt", ram);
+        $readmemh("E:/Computer-Organization-and-Design-26SP/Labs/Lab1/Task3/attachments/data.txt", ram);
     end
 
     // 端口 A 同步读写
     always @(posedge clk) begin
-        if (wea) ram[addra] <= dina;
+        if (wea)
+            ram[addra] <= dina;
         douta <= ram[addra];
     end
 
     // 端口 B 同步读写
     always @(posedge clk) begin
-        if (web) ram[addrb] <= dinb;
+        if (web)
+            ram[addrb] <= dinb;
         doutb <= ram[addrb];
     end
 endmodule
@@ -75,6 +77,7 @@ module SRT (
         .addra (bram_addra),
         .dina  (bram_dina),
         .douta (bram_douta),
+
         .web   (bram_web),
         .addrb (bram_addrb),
         .dinb  (bram_dinb),
