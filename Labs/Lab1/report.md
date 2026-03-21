@@ -202,6 +202,49 @@ endmodule
 
 `res` 赋值时根据独热码 `sel` 每一位上的取值来选择最终的结果。
 
+### Task 1-2
+```Verilog
+module  RF (
+    input       [0 : 0]         clk     ,       // 时钟
+    input       [4 : 0]         ra0, ra1,       // 读地址
+    output  reg [31: 0]         rd0, rd1,       // 读数据
+    input       [4 : 0]         wa      ,       // 写地址
+    input       [31: 0]         wd      ,       // 写数据
+    input       [0 : 0]         we              // 写使能
+);
+reg [31:0] r[0:31];     // 寄存器堆
+
+// 初始化所有寄存器为 0
+integer i;
+initial begin
+    for (i = 0; i < 32; i = i + 1) begin
+        r[i] = 0;
+    end
+end
+
+// 读寄存器；写优先，同步
+always @(posedge clk) begin
+    if (we && ra0 != 0 && ra0 == wa) // 写优先：如果读写同一地址且非 0 号寄存器
+        rd0 <= wd;
+    else
+        rd0 <= r[ra0];
+    
+    if (we && ra1 != 0 && ra1 == wa)
+        rd1 <= wd;
+    else
+        rd1 <= r[ra1];
+end
+
+// 写寄存器（同步）
+always  @(posedge clk)
+    if (we && wa != 0)  // 只有写使能有效且地址非 0 时才写入
+        r[wa] <= wd;
+endmodule
+```
+寄存器实现写优先的思路：在读操作时，如果读地址与写地址相同且写使能有效，则优先返回写数据而不是寄存器中的旧数据。
+
+为了让寄存器堆的输出数据流更规整，采用同步读取方式实现寄存器堆，只在时钟上升沿读取寄存器堆中的数据并更新到输出端口。如果输入的地址信息维持没有达到一个时钟周期，则会被寄存器堆忽略。
+
 ## Task 2
 本任务使用的 testbench 文件如下：
 ```Veriog
