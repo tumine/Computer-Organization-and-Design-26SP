@@ -16,20 +16,18 @@ initial begin
     end
 end
 
-// 读寄存器；写优先，异步
-always @(*) begin
+// 读寄存器；写优先，同步
+always @(posedge clk) begin
     if (we && ra0 != 0 && ra0 == wa) // 写优先：如果读写同一地址且非 0 号寄存器
-        rd0 = wd;
+        rd0 <= wd;
     else
-        rd0 = r[ra0];
+        rd0 <= r[ra0];
     
     if (we && ra1 != 0 && ra1 == wa)
-        rd1 = wd;
+        rd1 <= wd;
     else
-        rd1 = r[ra1];
+        rd1 <= r[ra1];
 end
-
-// TODO: 检查参考仿真结果发现 rd1 可能属于同步读取（rd0 仍为异步读取），需要进一步确认
 
 // 写寄存器（同步）
 always  @(posedge clk)

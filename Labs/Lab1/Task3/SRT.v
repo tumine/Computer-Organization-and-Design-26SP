@@ -84,23 +84,6 @@ module SRT (
         .doutb (bram_doutb)
     );
 
-    // 真双端口 BRAM（ENA Pin 始终启用）
-    /*
-    blk_mem_gen_2 dual_blk_mem_wfirst (
-        .clka(clk), 
-        .wea(bram_wea), 
-        .addra(bram_addra), 
-        .dina(bram_dina), 
-        .douta(bram_douta),
-
-        .clkb(clk),
-        .web(bram_web),
-        .addrb(bram_addrb),
-        .dinb(bram_dinb), 
-        .doutb(bram_doutb)
-    );
-    */
-
     // 查看地址功能映射：空闲或完成时，利用端口 A 读取外部开关指定的地址
     assign data = bram_douta;
 
@@ -109,10 +92,11 @@ module SRT (
     // --------------------------------------------------------
     localparam S_IDLE  = 3'd0; // 空闲/等待
     localparam S_READ  = 3'd1; // 发送读地址
-    localparam S_WAIT  = 3'd2; // 等待 BRAM 同步读取延迟 (1 个周期)
+    localparam S_RWAIT = 3'd2; // 等待 BRAM 同步读取延迟（1 个周期）
     localparam S_CMP   = 3'd3; // 比较数据，决定是否交换
     localparam S_WRITE = 3'd4; // 写入交换后的数据
-    localparam S_DONE  = 3'd5; // 排序完成
+    localparam S_WWAIT = 3'd5; // 等待 BRAM 写入，提高电路稳定性
+    localparam S_DONE  = 3'd6; // 排序完成
 
     reg [2:0] current_state, next_state;
 
@@ -161,7 +145,7 @@ module SRT (
                     bram_addrb <= j;
                 end
 
-                S_WAIT: begin   // 缓冲 1 个时钟周期，等待 BRAM 将数据推送到 douta 和 doutb
+                S_RWAIT: begin   // 缓冲 1 个时钟周期，等待 BRAM 将数据推送到 douta 和 doutb
                     count <= count + 1;
                 end
 
@@ -181,12 +165,12 @@ module SRT (
                     else begin
                         // 不需要交换，直接跳转到下一个元素
                         if (j > i + 1) begin
-                            j     <= j - 1;
+                            j <= j - 1;
                         end
                         else begin
                             if (i < 1022) begin
-                                i     <= i + 1;
-                                j     <= 1023;
+                                i <= i + 1;
+                                j <= 1023;
                             end
                         end
                     end
@@ -197,15 +181,19 @@ module SRT (
                     // 写入只需一个周期，立刻关闭写使能
                     bram_wea <= 0;
                     bram_web <= 0;
-                    
+                end
+
+                S_WWAIT: begin
+                    count <= count + 1;
+
                     // 索引跳转逻辑
                     if (j > i + 1) begin
-                        j     <= j - 1;
+                        j <= j - 1;
                     end
                     else begin
                         if (i < 1022) begin
-                            i     <= i + 1;
-                            j     <= 1023;
+                            i <= i + 1;
+                            j <= 1023;
                         end
                     end
                 end
@@ -230,8 +218,8 @@ module SRT (
                 else
                     next_state = S_IDLE; 
             S_READ: // 从内存中读取，直接跳转到 WAIT 状态等待一个时钟周期
-                next_state = S_WAIT;
-            S_WAIT: // 等待一个时钟周期后读取完毕，跳转到 CMP 状态
+                next_state = S_RWAIT;
+            S_RWAIT: // 等待一个时钟周期后读取完毕，跳转到 CMP 状态
                 next_state = S_CMP;
             S_CMP:
                 if ((mode == 1'b1 && bram_douta > bram_doutb) ||    // 升序情况下(1)，前面的数比后面的数更大
@@ -244,15 +232,14 @@ module SRT (
                         next_state = S_DONE;
                 end
             S_WRITE:
+                next_state = S_WWAIT;
+            S_WWAIT:
                 if (j > i + 1 || i < 1022)   // 完整一轮的比较仍未结束，或者后面还有新的一轮比较需要进行
                     next_state = S_READ;
                 else                            // 比较完成
                     next_state = S_DONE;
-            S_DONE: begin                       // 停在 DONE，直到 start 释放
-                if (start)
-                    next_state = S_DONE;
-                else
-                    next_state = S_IDLE;
+            S_DONE: begin
+                next_state = S_IDLE;
             end
             default:    // 对于其它非法状态，直接跳转到 IDLE
                 next_state = S_IDLE;
@@ -265,5 +252,113 @@ module SRT (
     always @(*) begin
         done = (current_state == S_DONE);
     end
+
+endmodule
+
+module Segment3 (
+    input           [ 0 : 0]            clk_100m        ,
+    input           [ 0 : 0]            rst_n           ,
+
+    input           [31 : 0]            display_data    ,
+
+    output  reg     [ 7 : 0]            an              ,      // Connecting segments display
+    output  reg     [ 6 : 0]            data                   // Connecting segments display      
+);
+
+    reg  [ 2 : 0]     seg_cnt     ;
+    reg  [ 3 : 0]     seg_data    ;
+    reg  [16 : 0]     cnt400      ;
+
+
+    always @(posedge clk_100m) begin
+        if (!rst_n) begin
+            cnt400  <= 0;
+            seg_cnt <= 0;
+        end
+        else begin
+            if (cnt400 > 'D49999) begin
+                cnt400 <= 0;
+                if (seg_cnt == 'D7)
+                    seg_cnt <= 0;
+                else
+                    seg_cnt <= seg_cnt + 'B1;
+            end
+            else
+                cnt400 <= cnt400 + 'B1;
+        end
+    end
+    
+    always @(*) begin
+        case (seg_cnt)
+             'D0: begin an = 8'B11111110; seg_data = display_data[0 +: 4]; end
+             'D1: begin an = 8'B11111101; seg_data = display_data[4 +: 4]; end
+             'D2: begin an = 8'B11111011; seg_data = display_data[8 +: 4]; end
+             'D3: begin an = 8'B11110111; seg_data = display_data[12 +: 4]; end
+             'D4: begin an = 8'B11101111; seg_data = display_data[16 +: 4]; end
+             'D5: begin an = 8'B11011111; seg_data = display_data[20 +: 4]; end
+             'D6: begin an = 8'B10111111; seg_data = display_data[24 +: 4]; end
+             'D7: begin an = 8'B01111111; seg_data = display_data[28 +: 4]; end
+        endcase   
+        case (seg_data)
+            4'H0: data = 7'B0000001;  //0
+            4'H1: data = 7'B1001111;  //1
+            4'H2: data = 7'B0010010;  //2
+            4'H3: data = 7'B0000110;  //3
+            4'H4: data = 7'B1001100;  //4
+            4'H5: data = 7'B0100100;  //5
+            4'H6: data = 7'B0100000;  //6
+            4'H7: data = 7'B0001111;  //7
+            4'H8: data = 7'B0000000;  //8
+            4'H9: data = 7'B0000100;  //9
+            4'Ha: data = 7'B0001000;  //A
+            4'Hb: data = 7'B1100000;  //B
+            4'Hc: data = 7'B0110001;  //C
+            4'Hd: data = 7'B1000010;  //D
+            4'He: data = 7'B0110000;  //E
+            4'Hf: data = 7'B0111000;  //F
+        endcase
+    end
+endmodule
+
+module Top3 (
+    input               clk,
+    input               rstn,           // 按键复位
+    input               start,          // 按键启动排序
+    input               mode,           // 开关选择排序模式：0-降序，1-升序
+    input  [9:0]        addr,           // 开关输入查看地址
+    output [7:0]        an,             // 数码管位选
+    output [6:0]        data,           // 数码管段选
+    output              done_led        // LED指示排序完成
+);
+
+wire [31:0] mem_data;   // BRAM 读出数据
+wire [31:0] count;      // 排序时钟周期数
+wire        done;       // 排序完成信号
+
+// 实例化 SRT 排序模块
+SRT srt (
+    .clk(clk),
+    .rstn(rstn),
+    .mode(mode),
+    .start(start),
+    .addr(addr),
+    .done(done),
+    .data(mem_data),
+    .count(count)
+);
+
+// 数码管显示：显示 data 或 count
+wire [31:0] display_data = done ? count : mem_data;
+
+Segment3 segment (
+    .clk_100m(clk),
+    .rst_n(rstn),
+    .display_data(display_data),
+    .an(an),
+    .data(data)
+);
+
+// LED 指示排序完成
+assign done_led = done;
 
 endmodule
