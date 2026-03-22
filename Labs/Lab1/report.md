@@ -600,3 +600,6 @@ endmodule
 ### Task 3-2
 LUT、FF 等资源的使用情况如下图：
 ![LUT、FF 等资源使用情况](attachments/pic_task3_util.png)
+
+经过测试，当时钟周期为 $7.1\,\text{ns}$ 时，WNS 达到 $0.045\,\text{ns}$，故电路正常工作的最高时钟频率约为 $141.7\,\text{MHz}$。
+![时钟周期 7.1ns 下的时序情况](attachments/pic_task3_wns.png)
