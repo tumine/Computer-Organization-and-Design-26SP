@@ -84,23 +84,6 @@ module SRT (
         .doutb (bram_doutb)
     );
 
-    // 真双端口 BRAM（ENA Pin 始终启用）
-    /*
-    blk_mem_gen_2 dual_blk_mem_wfirst (
-        .clka(clk), 
-        .wea(bram_wea), 
-        .addra(bram_addra), 
-        .dina(bram_dina), 
-        .douta(bram_douta),
-
-        .clkb(clk),
-        .web(bram_web),
-        .addrb(bram_addrb),
-        .dinb(bram_dinb), 
-        .doutb(bram_doutb)
-    );
-    */
-
     // 查看地址功能映射：空闲或完成时，利用端口 A 读取外部开关指定的地址
     assign data = bram_douta;
 
@@ -109,7 +92,7 @@ module SRT (
     // --------------------------------------------------------
     localparam S_IDLE  = 3'd0; // 空闲/等待
     localparam S_READ  = 3'd1; // 发送读地址
-    localparam S_WAIT  = 3'd2; // 等待 BRAM 同步读取延迟 (1 个周期)
+    localparam S_WAIT  = 3'd2; // 等待 BRAM 同步读取延迟（1 个周期）
     localparam S_CMP   = 3'd3; // 比较数据，决定是否交换
     localparam S_WRITE = 3'd4; // 写入交换后的数据
     localparam S_DONE  = 3'd5; // 排序完成
@@ -248,11 +231,8 @@ module SRT (
                     next_state = S_READ;
                 else                            // 比较完成
                     next_state = S_DONE;
-            S_DONE: begin                       // 停在 DONE，直到 start 释放
-                if (start)
-                    next_state = S_DONE;
-                else
-                    next_state = S_IDLE;
+            S_DONE: begin
+                next_state = S_IDLE;
             end
             default:    // 对于其它非法状态，直接跳转到 IDLE
                 next_state = S_IDLE;
@@ -335,7 +315,7 @@ endmodule
 
 module Top3 (
     input               clk,
-    input               rst,            // 按键复位
+    input               rstn,           // 按键复位
     input               start,          // 按键启动排序
     input               mode,           // 开关选择排序模式：0-降序，1-升序
     input  [9:0]        addr,           // 开关输入查看地址
@@ -351,7 +331,7 @@ wire        done;       // 排序完成信号
 // 实例化 SRT 排序模块
 SRT srt (
     .clk(clk),
-    .rstn(~rst),
+    .rstn(rstn),
     .mode(mode),
     .start(start),
     .addr(addr),
@@ -365,7 +345,7 @@ wire [31:0] display_data = done ? count : mem_data;
 
 Segment3 segment (
     .clk_100m(clk),
-    .rst_n(~rst),
+    .rst_n(rstn),
     .display_data(display_data),
     .an(an),
     .data(data)
