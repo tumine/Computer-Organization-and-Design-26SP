@@ -92,10 +92,11 @@ module SRT (
     // --------------------------------------------------------
     localparam S_IDLE  = 3'd0; // 空闲/等待
     localparam S_READ  = 3'd1; // 发送读地址
-    localparam S_WAIT  = 3'd2; // 等待 BRAM 同步读取延迟（1 个周期）
+    localparam S_RWAIT = 3'd2; // 等待 BRAM 同步读取延迟（1 个周期）
     localparam S_CMP   = 3'd3; // 比较数据，决定是否交换
     localparam S_WRITE = 3'd4; // 写入交换后的数据
-    localparam S_DONE  = 3'd5; // 排序完成
+    localparam S_WWAIT = 3'd5; // 等待 BRAM 写入，提高电路稳定性
+    localparam S_DONE  = 3'd6; // 排序完成
 
     reg [2:0] current_state, next_state;
 
@@ -144,7 +145,7 @@ module SRT (
                     bram_addrb <= j;
                 end
 
-                S_WAIT: begin   // 缓冲 1 个时钟周期，等待 BRAM 将数据推送到 douta 和 doutb
+                S_RWAIT: begin   // 缓冲 1 个时钟周期，等待 BRAM 将数据推送到 douta 和 doutb
                     count <= count + 1;
                 end
 
@@ -164,12 +165,12 @@ module SRT (
                     else begin
                         // 不需要交换，直接跳转到下一个元素
                         if (j > i + 1) begin
-                            j     <= j - 1;
+                            j <= j - 1;
                         end
                         else begin
                             if (i < 1022) begin
-                                i     <= i + 1;
-                                j     <= 1023;
+                                i <= i + 1;
+                                j <= 1023;
                             end
                         end
                     end
@@ -180,15 +181,19 @@ module SRT (
                     // 写入只需一个周期，立刻关闭写使能
                     bram_wea <= 0;
                     bram_web <= 0;
-                    
+                end
+
+                S_WWAIT: begin
+                    count <= count + 1;
+
                     // 索引跳转逻辑
                     if (j > i + 1) begin
-                        j     <= j - 1;
+                        j <= j - 1;
                     end
                     else begin
                         if (i < 1022) begin
-                            i     <= i + 1;
-                            j     <= 1023;
+                            i <= i + 1;
+                            j <= 1023;
                         end
                     end
                 end
@@ -213,8 +218,8 @@ module SRT (
                 else
                     next_state = S_IDLE; 
             S_READ: // 从内存中读取，直接跳转到 WAIT 状态等待一个时钟周期
-                next_state = S_WAIT;
-            S_WAIT: // 等待一个时钟周期后读取完毕，跳转到 CMP 状态
+                next_state = S_RWAIT;
+            S_RWAIT: // 等待一个时钟周期后读取完毕，跳转到 CMP 状态
                 next_state = S_CMP;
             S_CMP:
                 if ((mode == 1'b1 && bram_douta > bram_doutb) ||    // 升序情况下(1)，前面的数比后面的数更大
@@ -227,6 +232,8 @@ module SRT (
                         next_state = S_DONE;
                 end
             S_WRITE:
+                next_state = S_WWAIT;
+            S_WWAIT:
                 if (j > i + 1 || i < 1022)   // 完整一轮的比较仍未结束，或者后面还有新的一轮比较需要进行
                     next_state = S_READ;
                 else                            // 比较完成
