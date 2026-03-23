@@ -1,6 +1,9 @@
 # 求解斐波那契数列程序
 
-fibonacci:
+.text                       # 代码段开始标记
+.globl main                 # 声明 main 标签为全局可见，可以被链接器找到
+
+main:
     beqz a0, end_fib        # 若 a0 = 0，直接返回结果为 0 = a0
 
     li t1, 1                # F(1) = 1，同时用于 n = 1 的条件判定
@@ -32,4 +35,5 @@ end_loop:
     mv a0, t1               # 循环结束时，t2 = n，t1 寄存器的值即为 F(n)
 
 end_fib:
-    ret
+    li a7, 10               # 结束求解程序
+    ecall
