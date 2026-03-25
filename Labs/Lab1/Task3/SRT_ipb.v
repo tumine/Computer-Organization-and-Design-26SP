@@ -297,15 +297,15 @@ module Top3_ipb (
     input  [9:0]        addr,           // 开关输入查看地址
     output [7:0]        an,             // 数码管位选
     output [6:0]        data,           // 数码管段选
-    output              done_led        // LED 指示排序完成
+    output              done,           // LED 指示排序完成
+    output [15:0]       count           // 排序时钟周期计数
 );
 
-wire [31:0] mem_data;   // BRAM 读出数据
-wire [31:0] count;      // 排序时钟周期数
-wire        done;       // 排序完成信号
+wire [31:0] srt_count;
+wire [31:0] mem_data;                   // BRAM 读出数据
 
 // 实例化 SRT 排序模块
-SRT srt (
+SRT_ipb srt (
     .clk(clk),
     .rstn(rstn),
     .mode(mode),
@@ -313,10 +313,10 @@ SRT srt (
     .addr(addr),
     .done(done),
     .data(mem_data),
-    .count(count)
+    .count(srt_count)
 );
 
-Segment3 segment (
+Segment3_ipb segment (
     .clk_100m(clk),
     .rst_n(rstn),
     .display_data(mem_data),
@@ -324,7 +324,6 @@ Segment3 segment (
     .data(data)
 );
 
-// LED 指示排序完成
-assign done_led = done;
+assign count = srt_count[25:10];
 
 endmodule

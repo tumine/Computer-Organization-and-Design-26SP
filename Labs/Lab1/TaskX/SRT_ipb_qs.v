@@ -22,7 +22,7 @@ module SRTX2_ipb (
     wire [31:0] bram_douta, bram_doutb;
 
     // 真双端口 BRAM（ENA Pin 始终启用）
-    blk_mem_gen_0 dual_blk_mem_wfirst (
+    blk_mem_gen_1 dual_blk_mem_wfirst (
         .clka(clk), 
         .wea(bram_wea), 
         .addra(bram_addra), 
@@ -464,15 +464,15 @@ module TopX2_ipb (
     input  [9:0]        addr,           // 开关输入查看地址
     output [7:0]        an,             // 数码管位选
     output [6:0]        data,           // 数码管段选
-    output              done_led        // LED指示排序完成
+    output              done,           // LED指示排序完成
+    output [15:0]       count           // 排序时钟周期数
 );
 
-wire [31:0] mem_data;   // BRAM 读出数据
-wire [31:0] count;      // 排序时钟周期数
-wire        done;       // 排序完成信号
+wire [31:0] srt_count;
+wire [31:0] mem_data;                   // BRAM 读出数据
 
 // 实例化 SRT 排序模块
-SRTX2 srt (
+SRTX2_ipb srt (
     .clk(clk),
     .rstn(rstn),
     .mode(mode),
@@ -480,7 +480,7 @@ SRTX2 srt (
     .addr(addr),
     .done(done),
     .data(mem_data),
-    .count(count)
+    .count(srt_count)
 );
 
 // 数码管显示：显示 data 或 count
@@ -494,7 +494,6 @@ SegmentX2 segment (
     .data(data)
 );
 
-// LED 指示排序完成
-assign done_led = done;
+assign count = srt_count[25:10];
 
 endmodule
