@@ -211,7 +211,7 @@ module SRT_ipb (
                 else                            // 比较完成
                     next_state = S_DONE;
             S_DONE: begin
-                next_state = S_IDLE;
+                next_state = S_DONE;        // 保持在 DONE 状态，使板上 done 信号对应 LED 持续点亮
             end
             default:    // 对于其它非法状态，直接跳转到 IDLE
                 next_state = S_IDLE;
