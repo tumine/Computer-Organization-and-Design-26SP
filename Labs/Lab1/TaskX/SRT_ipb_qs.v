@@ -158,6 +158,10 @@ module SRTX2_ipb (
                     if (j < high) begin // 还没有遍历完所有元素
                         bram_addra <= j;
                     end
+                    else begin
+                        // 循环结束，提前计算 pivot_idx 供 S_PUSH 使用
+                        pivot_idx <= i + 1;
+                    end
                 end
 
                 S_WAIT_J: begin // 等待读取 bram[j]
@@ -175,7 +179,13 @@ module SRTX2_ipb (
                     if ((mode == 1'b1 && val_j <= pivot_val) || 
                         (mode == 1'b0 && val_j >= pivot_val)) begin
                         i <= i + 1;
-                        bram_addrb <= i + 1; // 准备读取 bram[i] 进行交换；交换后 bram[i] 仍需要判断，j 不变
+                        if (i + 1 == j) begin
+                            // i+1 == j: 元素与自身交换无意义，跳过，直接前进
+                            j <= j + 1;
+                        end
+                        else begin
+                            bram_addrb <= i + 1; // 准备读取 bram[i+1] 进行交换
+                        end
                     end
                     else begin
                         j <= j + 1;
@@ -193,18 +203,20 @@ module SRTX2_ipb (
                 
                 S_SWAP1: begin
                     count <= count + 1;
+                    // 先只通过 A 端口写 bram[i] = val_j
                     bram_wea    <= 1;
                     bram_addra  <= i;
                     bram_dina   <= val_j;
-
+                    // B 端口本周期不操作，预填数据但不使能写
                     bram_web    <= 0;
-                    bram_addrb  <= j;
                     bram_dinb   <= val_i;
                 end
                 
                 S_SWAP2: begin
                     count <= count + 1;
+                    // 关闭 A 写，开启 B 写 bram[j] = val_i
                     bram_wea    <= 0;
+                    bram_addrb  <= j;
                     bram_web    <= 1;
                     j <= j + 1;
                 end
@@ -234,20 +246,20 @@ module SRTX2_ipb (
                     val_i1 <= bram_douta;
                 end
                 
-                S_SWAP_PIVOT_WRITE1: begin  // 先写 A 端口，把 pivot 归位；同时可以先把 B 端口待写入的数据准备好
+                S_SWAP_PIVOT_WRITE1: begin  // 先写 A 端口，把 pivot 归位
                     count <= count + 1;
                     bram_wea <= 1;
                     bram_addra <= pivot_idx;
                     bram_dina <= pivot_val;
-
+                    // B 端口本周期不操作，预填数据但不使能写，地址推迟到 WRITE2 再设
                     bram_web <= 0;
-                    bram_addrb <= high;
                     bram_dinb <= val_i1;
                 end
                 
                 S_SWAP_PIVOT_WRITE2: begin  // 再写 B 端口
                     count <= count + 1;
                     bram_wea <= 0;
+                    bram_addrb <= high;  // 此时 A 端口写已完成，设 B 地址不会冲突
                     bram_web <= 1;
                 end
                 
@@ -317,6 +329,8 @@ module SRTX2_ipb (
             S_LOOP_COND:
                 if (j < high)   // 还没有遍历完所有元素
                     next_state = S_WAIT_J;
+                else if (i + 1 == high) // pivot 已经在正确位置，无需归位交换
+                    next_state = S_PUSH;
                 else            // 遍历完成，下一步将基准元素放到正确位置
                     next_state = S_SWAP_PIVOT_READ;
 
@@ -328,8 +342,12 @@ module SRTX2_ipb (
 
             S_CMP:
                 if ((mode == 1'b1 && val_j <= pivot_val) ||         // 升序情况下(1)，当前的数小于 pivot
-                    (mode == 1'b0 && val_j >= pivot_val))           // 降序情况下(0)，当前的数大于 pivot
-                    next_state = S_WAIT_I;
+                    (mode == 1'b0 && val_j >= pivot_val)) begin     // 降序情况下(0)，当前的数大于 pivot
+                    if (i + 1 == j)       // 自交换无意义，跳过
+                        next_state = S_LOOP_COND;
+                    else
+                        next_state = S_WAIT_I;
+                end
                 else
                     next_state = S_LOOP_COND;
 
@@ -376,7 +394,7 @@ module SRTX2_ipb (
                 next_state = S_POP;
 
             S_DONE:
-                next_state = S_IDLE;
+                next_state = S_DONE;  // 保持在 DONE，使 done 信号持续拉高
             default:
                 next_state = S_IDLE;
         endcase
@@ -486,7 +504,7 @@ SRTX2_ipb srt (
 // 数码管显示：显示 data 或 count
 wire [31:0] display_data = done ? count : mem_data;
 
-SegmentX2 segment (
+SegmentX2_ipb segment (
     .clk_100m(clk),
     .rst_n(rstn),
     .display_data(display_data),
