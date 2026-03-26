@@ -21,7 +21,7 @@ module SRTX2_ipb (
     reg         bram_wea,   bram_web;
     wire [31:0] bram_douta, bram_doutb;
 
-    // 真双端口 BRAM（ENA Pin 始终启用）
+    // 真双端口 BRAM（ENA Pin 始终启用，32x1024）
     blk_mem_gen_1 dual_blk_mem_wfirst (
         .clka(clk), 
         .wea(bram_wea), 
@@ -39,10 +39,28 @@ module SRTX2_ipb (
     assign data = bram_douta;
 
     // --------------------------------------------------------
-    // 硬件栈存储 {low, high} 区间索引对
+    // 硬件栈 BRAM 接口（存储 {low, high} 区间索引对，22 位宽 × 1024 深）
     // 使用 11 位有符号数防止 i = low - 1 时出现下溢
     // --------------------------------------------------------
-    reg [21:0] stack [0:1023]; 
+    reg  [9:0]  stk_addra, stk_addrb;
+    reg  [21:0] stk_dina,  stk_dinb;
+    reg         stk_wea,   stk_web;
+    wire [21:0] stk_douta, stk_doutb;
+
+    blk_mem_gen_2 stack_bram (
+        .clka(clk),
+        .wea(stk_wea),
+        .addra(stk_addra),
+        .dina(stk_dina),
+        .douta(stk_douta),
+
+        .clkb(clk),
+        .web(stk_web),
+        .addrb(stk_addrb),
+        .dinb(stk_dinb),
+        .doutb(stk_doutb)
+    );
+
     reg [10:0] sp; // 栈顶指针
 
     // --------------------------------------------------------
@@ -72,6 +90,7 @@ module SRTX2_ipb (
     localparam S_SWAP_PIVOT_WAIT2       = 5'd21;  // pivot 归位：等待 B 端口写入
     localparam S_PUSH                   = 5'd22;  // 将分区产生的子数组 [low, pivot-1] 和 [pivot+1, high] 压栈
     localparam S_DONE                   = 5'd23;  // 排序完成
+    localparam S_POP_WAIT               = 5'd24;  // 等待栈 BRAM 读取延迟
 
     reg [4:0] current_state, next_state;
     
@@ -99,6 +118,12 @@ module SRTX2_ipb (
             bram_addrb    <= 0;
             bram_dina     <= 0;
             bram_dinb     <= 0;
+            stk_wea       <= 0;
+            stk_web       <= 0;
+            stk_addra     <= 0;
+            stk_addrb     <= 0;
+            stk_dina      <= 0;
+            stk_dinb      <= 0;
             low           <= 0;
             high          <= 0;
             i             <= 0;
@@ -116,11 +141,18 @@ module SRTX2_ipb (
                     bram_wea    <= 0;
                     bram_web    <= 0;
                     bram_addra  <= addr; // 开放给拨码开关查看
+                    stk_web     <= 0;
                     
                     if (start) begin
                         sp          <= 1;
-                        stack[0]    <= {11'sd0, 11'sd1023}; // 初始化压入整个数组范围
+                        // 通过栈 BRAM 端口 A 写入初始区间 {0, 1023}
+                        stk_addra   <= 0;
+                        stk_dina    <= {11'sd0, 11'sd1023};
+                        stk_wea     <= 1;
                         count       <= 0;
+                    end
+                    else begin
+                        stk_wea     <= 0;
                     end
                 end
 
@@ -128,16 +160,24 @@ module SRTX2_ipb (
                     count <= count + 1;
                     bram_wea <= 0;
                     bram_web <= 0;
-                    if (sp != 0) begin  // 栈非空，读出 {low, high} 数据对并出栈
-                        low   <= stack[sp-1][21:11];
-                        high  <= stack[sp-1][10:0];
-                        sp    <= sp - 1;
+                    stk_wea  <= 0;
+                    stk_web  <= 0;
+                    if (sp != 0) begin  // 栈非空，发送读地址到栈 BRAM 并出栈
+                        stk_addra <= sp - 1;
+                        sp        <= sp - 1;
                     end
+                end
+
+                S_POP_WAIT: begin  // 等待栈 BRAM 读取延迟
+                    count <= count + 1;
                 end
 
                 S_READ_PIVOT: begin
                     count <= count + 1;
-                    bram_addra <= high; // 固定取最后一个元素作为基准
+                    // 从栈 BRAM 输出锁存 low/high，同时直接用 stk_douta 设置数据 BRAM 读地址
+                    low        <= stk_douta[21:11];
+                    high       <= stk_douta[10:0];
+                    bram_addra <= stk_douta[10:0]; // 固定取最后一个元素作为基准
                 end
                 
                 S_WAIT_PIVOT: begin // 等待读取 bram[high]
@@ -272,23 +312,37 @@ module SRTX2_ipb (
                     count <= count + 1;
                 end
 
-                // --- 将产生的新子数组索引压入栈 ---
+                // --- 通过栈 BRAM 将产生的新子数组索引压栈 ---
                 S_PUSH: begin
                     count <= count + 1;
                     bram_wea <= 0; bram_web <= 0;
                     
-                    if (low < pivot_idx - 1 && pivot_idx + 1 < high) begin // 左右区间同时非空
-                        stack[sp]   <= {low, pivot_idx - 11'sd1};
-                        stack[sp+1] <= {pivot_idx + 11'sd1, high};
+                    if (low < pivot_idx - 1 && pivot_idx + 1 < high) begin // 左右区间同时非空，双端口同时写入
+                        stk_addra <= sp;
+                        stk_dina  <= {low, pivot_idx - 11'sd1};
+                        stk_wea   <= 1;
+                        stk_addrb <= sp + 1;
+                        stk_dinb  <= {pivot_idx + 11'sd1, high};
+                        stk_web   <= 1;
                         sp <= sp + 2;
                     end
                     else if (low < pivot_idx - 1) begin                     // 仅左区间非空
-                        stack[sp] <= {low, pivot_idx - 11'sd1};
+                        stk_addra <= sp;
+                        stk_dina  <= {low, pivot_idx - 11'sd1};
+                        stk_wea   <= 1;
+                        stk_web   <= 0;
                         sp <= sp + 1;
                     end
                     else if (pivot_idx + 1 < high) begin                    // 仅右区间非空
-                        stack[sp] <= {pivot_idx + 11'sd1, high};
+                        stk_addra <= sp;
+                        stk_dina  <= {pivot_idx + 11'sd1, high};
+                        stk_wea   <= 1;
+                        stk_web   <= 0;
                         sp <= sp + 1;
+                    end
+                    else begin  // 两个区间都为空
+                        stk_wea <= 0;
+                        stk_web <= 0;
                     end
                 end
 
@@ -315,7 +369,10 @@ module SRTX2_ipb (
                 if (sp == 0)    // 栈空，则排序完成
                     next_state = S_DONE;
                 else
-                    next_state = S_READ_PIVOT;
+                    next_state = S_POP_WAIT;  // 等待栈 BRAM 读取
+
+            S_POP_WAIT:             // 栈 BRAM 读取延迟
+                next_state = S_READ_PIVOT;
 
             S_READ_PIVOT:       // 读出基准元素
                 next_state = S_WAIT_PIVOT;
@@ -501,13 +558,10 @@ SRTX2_ipb srt (
     .count(srt_count)
 );
 
-// 数码管显示：显示 data 或 count
-wire [31:0] display_data = done ? count : mem_data;
-
 SegmentX2_ipb segment (
     .clk_100m(clk),
     .rst_n(rstn),
-    .display_data(display_data),
+    .display_data(mem_data),
     .an(an),
     .data(data)
 );
