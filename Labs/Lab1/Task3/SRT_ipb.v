@@ -124,6 +124,12 @@ module SRT_ipb (
                         (mode == 1'b0 && val_a < val_b)) begin
                         // 需要交换：先将 A 端口读出的数据暂存
                         temp <= val_a;
+
+                        // 先向 A 端口写入
+                        bram_addra <= j - 1;
+                        bram_dina  <= val_b; 
+                        bram_wea   <= 1;
+                        bram_web   <= 0;
                     end
                     else begin
                         // 不需要交换，直接跳转到下一个元素
@@ -139,23 +145,11 @@ module SRT_ipb (
                     end
                 end
 
-                S_WPREP1: begin
-                    count <= count + 1;
-                    // 先向 A 端口写入
-                    bram_addra <= j - 1;
-                    bram_dina  <= val_b; 
-                    bram_wea   <= 1;
-                    bram_web   <= 0;
-                end
-
                 S_WRITE1: begin
                     count <= count + 1;
                     // 写只需一个周期，立刻关闭写使能
                     bram_wea   <= 0;
-                end
 
-                S_WPREP2: begin
-                    count <= count + 1;
                     // 再向 B 端口写入
                     bram_addrb <= j;
                     bram_dinb  <= temp;
@@ -211,18 +205,14 @@ module SRT_ipb (
             S_CMP:
                 if ((mode == 1'b1 && val_a > val_b) ||    // 升序情况下(1)，前面的数比后面的数更大
                     (mode == 1'b0 && val_a < val_b))      // 降序情况下(0)，前面的数比后面的数更小
-                    next_state = S_WPREP1;                           // 需要进行数据交换，先准备写入
+                    next_state = S_WRITE1;                           // 需要进行数据交换，先准备写入
                 else begin  // 否则，直接进行下一轮比较
                     if (j > i + 1 || i < 1022)   // 完整一轮的比较仍未结束，或者后面还有新的一轮比较需要进行
                         next_state = S_READ;
                     else                            // 比较完成
                         next_state = S_DONE;
                 end
-            S_WPREP1:
-                next_state = S_WRITE1;
             S_WRITE1:
-                next_state = S_WPREP2;
-            S_WPREP2:
                 next_state = S_WRITE2;
             S_WRITE2:
                 next_state = S_WWAIT;
