@@ -46,7 +46,7 @@ module SRT_ipb (
     // --------------------------------------------------------
     localparam S_IDLE   = 3'd0; // 空闲/等待
     localparam S_READ   = 3'd1; // 发送读地址
-    localparam S_RWAIT  = 3'd2; // 等待 BRAM 同步读取延迟（第 1 个周期）
+    localparam S_RWAIT  = 3'd2; // 等待 BRAM 同步读取延迟
     localparam S_CMP    = 3'd3; // 比较数据，决定是否交换
     localparam S_WRITE1 = 3'd4; // 向 A 端口写入交换后的数据
     localparam S_WRITE2 = 3'd5; // 向 B 端口写入交换后的数据，同时兼做等待 a 端口写入
@@ -58,7 +58,6 @@ module SRT_ipb (
     reg [9:0] i;       // 外循环: 0 到 1022
     reg [9:0] j;       // 内循环: 1023 到 i + 1
     reg [31:0] temp;  // 交换写入过程中暂存 dout_a 使用
-    reg [31:0] val_a, val_b;  // 锁存 BRAM 读出数据（适配 read latency = 2）
 
     // --------------------------------------------------------
     // 主控时序逻辑
@@ -76,8 +75,6 @@ module SRT_ipb (
             bram_dina       <= 0;
             bram_dinb       <= 0;
             temp            <= 0;
-            val_a           <= 0;
-            val_b           <= 0;
         end 
         else begin
             current_state <= next_state;
@@ -187,7 +184,7 @@ module SRT_ipb (
                     next_state = S_READ;
                 else
                     next_state = S_IDLE; 
-            S_READ: // 从内存中读取，跳转到第 1 个等待周期
+            S_READ: // 从内存中读取，跳转到等待周期
                 next_state = S_RWAIT;
             S_RWAIT: // 等待 1 个时钟周期，使输出端口数据稳定
                 next_state = S_CMP;

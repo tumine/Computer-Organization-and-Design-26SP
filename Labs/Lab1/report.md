@@ -324,50 +324,9 @@ Distributed RAM 的读取基于纯粹的组合逻辑，因此可以即时响应�
 `timescale 1ns / 1ps
 
 // ========================================================
-// 真双端口 BRAM（读优先，双读单写）
-// ========================================================
-module dual_port_bram #(
-    parameter DATA_WIDTH = 32,
-    parameter ADDR_WIDTH = 10
-)(
-    input  wire                  clk,
-    // 端口 A
-    input  wire                  wea,
-    input  wire [ADDR_WIDTH-1:0] addra,
-    input  wire [DATA_WIDTH-1:0] dina,
-    output reg  [DATA_WIDTH-1:0] douta,
-    // 端口 B
-    input  wire                  web,
-    input  wire [ADDR_WIDTH-1:0] addrb,
-    input  wire [DATA_WIDTH-1:0] dinb,
-    output reg  [DATA_WIDTH-1:0] doutb
-);
-
-    // 定义存储器，深度 1024
-    reg [DATA_WIDTH-1:0] ram [0:(1<<ADDR_WIDTH)-1];
-
-    initial begin
-        // 使用 .txt 文件进行初始化
-        $readmemh("E:/Computer-Organization-and-Design-26SP/Labs/Lab1/Task3/attachments/data.txt", ram);
-    end
-
-    // 同步读写，同一周期只能向一个端口写入（A 端口优先）
-    always @(posedge clk) begin
-        if (wea)
-            ram[addra] <= dina;
-        else if (web)
-            ram[addrb] <= dinb;
-            
-        douta <= ram[addra];
-        doutb <= ram[addrb];
-    end
-endmodule
-
-
-// ========================================================
 // 冒泡排序主模块 SRT
 // ========================================================
-module SRT (
+module SRT_ipb (
     input  wire        clk,
     input  wire        rstn,
     input  wire        mode,      // 0-降序，1-升序
@@ -387,21 +346,19 @@ module SRT (
     reg         bram_wea,   bram_web;
     wire [31:0] bram_douta, bram_doutb;
 
-    // 实例化 BRAM
-    dual_port_bram #(
-        .DATA_WIDTH(32),
-        .ADDR_WIDTH(10)
-    ) bram (
-        .clk   (clk),
-        .wea   (bram_wea),
-        .addra (bram_addra),
-        .dina  (bram_dina),
-        .douta (bram_douta),
+    // 真双端口 BRAM（ENA Pin 始终启用）
+    blk_mem_gen_0 dual_blk_mem_wfirst (
+        .clka(clk), 
+        .wea(bram_wea), 
+        .addra(bram_addra), 
+        .dina(bram_dina), 
+        .douta(bram_douta),
 
-        .web   (bram_web),
-        .addrb (bram_addrb),
-        .dinb  (bram_dinb),
-        .doutb (bram_doutb)
+        .clkb(clk),
+        .web(bram_web),
+        .addrb(bram_addrb),
+        .dinb(bram_dinb), 
+        .doutb(bram_doutb)
     );
 
     // 查看地址功能映射：空闲或完成时，利用端口 A 读取外部开关指定的地址
@@ -412,7 +369,7 @@ module SRT (
     // --------------------------------------------------------
     localparam S_IDLE   = 3'd0; // 空闲/等待
     localparam S_READ   = 3'd1; // 发送读地址
-    localparam S_RWAIT  = 3'd2; // 等待 BRAM 同步读取延迟（1 个周期）
+    localparam S_RWAIT  = 3'd2; // 等待 BRAM 同步读取延迟
     localparam S_CMP    = 3'd3; // 比较数据，决定是否交换
     localparam S_WRITE1 = 3'd4; // 向 A 端口写入交换后的数据
     localparam S_WRITE2 = 3'd5; // 向 B 端口写入交换后的数据，同时兼做等待 a 端口写入
@@ -423,7 +380,7 @@ module SRT (
 
     reg [9:0] i;       // 外循环: 0 到 1022
     reg [9:0] j;       // 内循环: 1023 到 i + 1
-    reg [31:0] temp; // 交换写入过程中暂存 dout_a 使用
+    reg [31:0] temp;  // 交换写入过程中暂存 dout_a 使用
 
     // --------------------------------------------------------
     // 主控时序逻辑
@@ -468,17 +425,17 @@ module SRT (
                     bram_addrb <= j;
                 end
 
-                S_RWAIT: begin   // 缓冲 1 个时钟周期，等待 BRAM 将数据推送到 douta 和 doutb
+                S_RWAIT: begin   // 缓冲 1 个时钟周期
                     count <= count + 1;
                 end
 
-                S_CMP: begin    // douta 和 doutb 数据就绪，比较两个位上的数据大小
+                S_CMP: begin    // 使用锁存值比较
                     count <= count + 1;
                     if ((mode == 1'b1 && bram_douta > bram_doutb) || 
                         (mode == 1'b0 && bram_douta < bram_doutb)) begin
                         // 需要交换：先将 A 端口读出的数据暂存
                         temp <= bram_douta;
-                        
+
                         // 先向 A 端口写入
                         bram_addra <= j - 1;
                         bram_dina  <= bram_doutb; 
@@ -550,14 +507,14 @@ module SRT (
                     next_state = S_READ;
                 else
                     next_state = S_IDLE; 
-            S_READ: // 从内存中读取，直接跳转到 WAIT 状态等待一个时钟周期
+            S_READ: // 从内存中读取，跳转到等待周期
                 next_state = S_RWAIT;
-            S_RWAIT: // 等待一个时钟周期后读取完毕，跳转到 CMP 状态
+            S_RWAIT: // 等待 1 个时钟周期，使输出端口数据稳定
                 next_state = S_CMP;
             S_CMP:
                 if ((mode == 1'b1 && bram_douta > bram_doutb) ||    // 升序情况下(1)，前面的数比后面的数更大
                     (mode == 1'b0 && bram_douta < bram_doutb))      // 降序情况下(0)，前面的数比后面的数更小
-                    next_state = S_WRITE1;                          // 需要进行数据交换，进入阶段1
+                    next_state = S_WRITE1;                           // 需要进行数据交换，先准备写入
                 else begin  // 否则，直接进行下一轮比较
                     if (j > i + 1 || i < 1022)   // 完整一轮的比较仍未结束，或者后面还有新的一轮比较需要进行
                         next_state = S_READ;
@@ -574,7 +531,7 @@ module SRT (
                 else                            // 比较完成
                     next_state = S_DONE;
             S_DONE: begin
-                next_state = S_IDLE;
+                next_state = S_DONE;        // 保持在 DONE 状态，使板上 done 信号对应 LED 持续点亮
             end
             default:    // 对于其它非法状态，直接跳转到 IDLE
                 next_state = S_IDLE;
@@ -590,9 +547,9 @@ module SRT (
 
 endmodule
 ```
-在本任务的实现中，使用自行创建的读优先双端口读写 BRAM。
+在本任务的实现中，使用 IP 核例化的写优先真双端口读写 BRAM。
 
-排序模块中，设计的状态机包括 `IDLE`、`READ`、`RWAIT`、`CMP`、`WRITE`、`WWAIT`、`DONE` 等状态。复位后，状态机默认处于 `IDLE` 状态。
+排序模块中，设计的状态机包括 `IDLE`、`READ`、`RWAIT`、`CMP`、`WRITE1`、`WRITE2`、`WWAIT`、`DONE` 等状态。复位后，状态机默认处于 `IDLE` 状态。
 
 在排序过程中使用了两个临时变量用于指示当前的排序状态。外层循环 `i` 从 0 递增到 1022（`i` 以前的数据已经有序），内层循环 `j` 从 1023 递减到 `i + 1`（把当前最大 / 小的数据移动到有序区段末尾），每次比较相邻两个元素并根据排序模式决定是否交换。
 
@@ -603,12 +560,12 @@ endmodule
 4. 在 `CMP` 状态，排序模块根据排序模式 `mode` 对读取的两个数据进行比较：
    - 若 `mode = 1`（升序）且 `douta > doutb`，或 `mode = 0`（降序）且 `douta < doutb`，则需要交换两个数据，将 `douta` 存入 `temp`、设置端口 A 的写入地址为 `j - 1`，写入数据为 `douta` 后，跳转到 `WRITE` 状态；
    - 否则，不需要交换。若此时比较仍未结束（`j > i + 1` 或 `i < 1022`），则更新索引并跳转回 `READ` 状态继续下一轮比较；若所有比较已完成，则跳转到 `DONE` 状态。
-5. 在 `WRITE1` 状态，将 `doutb` 通过端口 A 写入地址 `j - 1`，同时设置端口 B 的写入地址为 `j`、写入数据为 `temp`，之后跳转到 `WRITE2` 状态。
-6. 在 `WRITE2` 状态，将 `temp(=douta)` 通过端口 B 写入地址 `j`，同时关闭 A 端口写入使能，之后跳转到 `WWAIT` 状态。
-7. 为了提高电路稳定性，状态机在 `WWAIT` 状态等待一个时钟周期，确保数据已稳定写入 BRAM。之后根据循环索引判断下一步的跳转：
+5. 在 `WRITE1` 状态，关闭 A 端口写入使能，同时设置端口 B 的写入地址为 `j`、写入数据为 `temp`，之后跳转到 `WRITE2` 状态。
+6. 在 `WRITE2` 状态，`doutb` 通过端口 A 写入地址 `j - 1`；关闭 B 端口写入使能。之后跳转到 `WWAIT` 状态。
+7. 在 `WWAIT` 状态，`temp(=douta)` 通过端口 B 写入地址 `j`。同时根据循环索引判断下一步的跳转：
    - 若比较仍未结束（`j > i + 1` 或 `i < 1022`），则更新索引并跳转回 `READ` 状态；
    - 若所有比较已完成，则跳转到 `DONE` 状态。
-8. 在 `DONE` 状态时，状态机将 `done` 信号置为有效，并将 BRAM 端口 A 再次开放给外部拨码开关以便查看排序后的数据。之后立即跳转回 `IDLE` 状态，等待下一次排序请求。
+8. 在 `DONE` 状态时，状态机将 `done` 信号置为有效，并将 BRAM 端口 A 再次开放给外部拨码开关以便查看排序后的数据。为了保证上板运行时 `done` 对应的信号能持续有效，`DONE` 状态将一直维持，直到 `rstn` 信号重置整个状态机。
 
 ### Task 3-2
 LUT、FF 等资源的使用情况如下图：
