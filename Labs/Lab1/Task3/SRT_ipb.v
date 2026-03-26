@@ -49,12 +49,10 @@ module SRT_ipb (
     localparam S_RWAIT  = 4'd2; // 等待 BRAM 同步读取延迟（第 1 个周期）
     localparam S_LATCH  = 4'd3; // 等待 output register 更新（第 2 个周期），锁存数据
     localparam S_CMP    = 4'd4; // 比较数据，决定是否交换
-    localparam S_WPREP1 = 4'd5; // 准备写入
-    localparam S_WRITE1 = 4'd6; // 向 A 端口写入交换后的数据
-    localparam S_WPREP2 = 4'd7; // 准备写入
-    localparam S_WRITE2 = 4'd8; // 向 B 端口写入交换后的数据，同时兼做等待 a 端口写入
-    localparam S_WWAIT  = 4'd9; // 等待 BRAM 写入，提高电路稳定性
-    localparam S_DONE   = 4'd10; // 排序完成
+    localparam S_WRITE1 = 4'd5; // 向 A 端口写入交换后的数据
+    localparam S_WRITE2 = 4'd6; // 向 B 端口写入交换后的数据，同时兼做等待 a 端口写入
+    localparam S_WWAIT  = 4'd7; // 等待 BRAM 写入，提高电路稳定性
+    localparam S_DONE   = 4'd8; // 排序完成
 
     reg [3:0] current_state, next_state;
 
