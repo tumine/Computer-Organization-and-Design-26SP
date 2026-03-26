@@ -44,17 +44,16 @@ module SRT_ipb (
     // --------------------------------------------------------
     // 状态机定义
     // --------------------------------------------------------
-    localparam S_IDLE   = 4'd0; // 空闲/等待
-    localparam S_READ   = 4'd1; // 发送读地址
-    localparam S_RWAIT  = 4'd2; // 等待 BRAM 同步读取延迟（第 1 个周期）
-    localparam S_LATCH  = 4'd3; // 等待 output register 更新（第 2 个周期），锁存数据
-    localparam S_CMP    = 4'd4; // 比较数据，决定是否交换
-    localparam S_WRITE1 = 4'd5; // 向 A 端口写入交换后的数据
-    localparam S_WRITE2 = 4'd6; // 向 B 端口写入交换后的数据，同时兼做等待 a 端口写入
-    localparam S_WWAIT  = 4'd7; // 等待 BRAM 写入，提高电路稳定性
-    localparam S_DONE   = 4'd8; // 排序完成
+    localparam S_IDLE   = 3'd0; // 空闲/等待
+    localparam S_READ   = 3'd1; // 发送读地址
+    localparam S_RWAIT  = 3'd2; // 等待 BRAM 同步读取延迟（第 1 个周期）
+    localparam S_CMP    = 3'd3; // 比较数据，决定是否交换
+    localparam S_WRITE1 = 3'd4; // 向 A 端口写入交换后的数据
+    localparam S_WRITE2 = 3'd5; // 向 B 端口写入交换后的数据，同时兼做等待 a 端口写入
+    localparam S_WWAIT  = 3'd6; // 等待 BRAM 写入，提高电路稳定性
+    localparam S_DONE   = 3'd7; // 排序完成
 
-    reg [3:0] current_state, next_state;
+    reg [2:0] current_state, next_state;
 
     reg [9:0] i;       // 外循环: 0 到 1022
     reg [9:0] j;       // 内循环: 1023 到 i + 1
@@ -106,26 +105,20 @@ module SRT_ipb (
                     bram_addrb <= j;
                 end
 
-                S_RWAIT: begin   // 缓冲第 1 个时钟周期
+                S_RWAIT: begin   // 缓冲 1 个时钟周期
                     count <= count + 1;
-                end
-
-                S_LATCH: begin   // 缓冲第 2 个时钟周期，锁存 BRAM 读出数据
-                    count <= count + 1;
-                    val_a <= bram_douta;  // 此时 output register 已更新，数据有效
-                    val_b <= bram_doutb;
                 end
 
                 S_CMP: begin    // 使用锁存值比较
                     count <= count + 1;
-                    if ((mode == 1'b1 && val_a > val_b) || 
-                        (mode == 1'b0 && val_a < val_b)) begin
+                    if ((mode == 1'b1 && bram_douta > bram_doutb) || 
+                        (mode == 1'b0 && bram_douta < bram_doutb)) begin
                         // 需要交换：先将 A 端口读出的数据暂存
-                        temp <= val_a;
+                        temp <= bram_douta;
 
                         // 先向 A 端口写入
                         bram_addra <= j - 1;
-                        bram_dina  <= val_b; 
+                        bram_dina  <= bram_doutb; 
                         bram_wea   <= 1;
                         bram_web   <= 0;
                     end
@@ -196,13 +189,11 @@ module SRT_ipb (
                     next_state = S_IDLE; 
             S_READ: // 从内存中读取，跳转到第 1 个等待周期
                 next_state = S_RWAIT;
-            S_RWAIT: // 第 1 个等待周期，跳转到第 2 个
-                next_state = S_LATCH;
-            S_LATCH: // 第 2 个等待周期（锁存数据），跳转到比较
+            S_RWAIT: // 等待 1 个时钟周期，使输出端口数据稳定
                 next_state = S_CMP;
             S_CMP:
-                if ((mode == 1'b1 && val_a > val_b) ||    // 升序情况下(1)，前面的数比后面的数更大
-                    (mode == 1'b0 && val_a < val_b))      // 降序情况下(0)，前面的数比后面的数更小
+                if ((mode == 1'b1 && bram_douta > bram_doutb) ||    // 升序情况下(1)，前面的数比后面的数更大
+                    (mode == 1'b0 && bram_douta < bram_doutb))      // 降序情况下(0)，前面的数比后面的数更小
                     next_state = S_WRITE1;                           // 需要进行数据交换，先准备写入
                 else begin  // 否则，直接进行下一轮比较
                     if (j > i + 1 || i < 1022)   // 完整一轮的比较仍未结束，或者后面还有新的一轮比较需要进行
