@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 
 // ========================================================
-// 真双端口 BRAM（读优先）
+// 真双端口 BRAM（读优先，双读单写）
 // ========================================================
 module dual_port_bram #(
     parameter DATA_WIDTH = 32,
@@ -28,17 +28,14 @@ module dual_port_bram #(
         $readmemh("E:/Computer-Organization-and-Design-26SP/Labs/Lab1/Task3/attachments/data.txt", ram);
     end
 
-    // 端口 A 同步读写
+    // 同步读写，同一周期只能向一个端口写入（A 端口优先）
     always @(posedge clk) begin
         if (wea)
             ram[addra] <= dina;
-        douta <= ram[addra];
-    end
-
-    // 端口 B 同步读写
-    always @(posedge clk) begin
-        if (web)
+        else if (web)
             ram[addrb] <= dinb;
+            
+        douta <= ram[addra];
         doutb <= ram[addrb];
     end
 endmodule
@@ -90,18 +87,20 @@ module SRT (
     // --------------------------------------------------------
     // 状态机定义
     // --------------------------------------------------------
-    localparam S_IDLE  = 3'd0; // 空闲/等待
-    localparam S_READ  = 3'd1; // 发送读地址
-    localparam S_RWAIT = 3'd2; // 等待 BRAM 同步读取延迟（1 个周期）
-    localparam S_CMP   = 3'd3; // 比较数据，决定是否交换
-    localparam S_WRITE = 3'd4; // 写入交换后的数据
-    localparam S_WWAIT = 3'd5; // 等待 BRAM 写入，提高电路稳定性
-    localparam S_DONE  = 3'd6; // 排序完成
+    localparam S_IDLE   = 3'd0; // 空闲/等待
+    localparam S_READ   = 3'd1; // 发送读地址
+    localparam S_RWAIT  = 3'd2; // 等待 BRAM 同步读取延迟（1 个周期）
+    localparam S_CMP    = 3'd3; // 比较数据，决定是否交换
+    localparam S_WRITE1 = 3'd4; // 向 A 端口写入交换后的数据
+    localparam S_WRITE2 = 3'd5; // 向 B 端口写入交换后的数据，同时兼做等待 a 端口写入
+    localparam S_WWAIT  = 3'd6; // 等待 BRAM 写入，提高电路稳定性
+    localparam S_DONE   = 3'd7; // 排序完成
 
     reg [2:0] current_state, next_state;
 
     reg [9:0] i;       // 外循环: 0 到 1022
     reg [9:0] j;       // 内循环: 1023 到 i + 1
+    reg [31:0] temp; // 交换写入过程中暂存 dout_a 使用
 
     // --------------------------------------------------------
     // 主控时序逻辑
@@ -118,6 +117,7 @@ module SRT (
             bram_addrb      <= 0;
             bram_dina       <= 0;
             bram_dinb       <= 0;
+            temp            <= 0;
         end 
         else begin
             current_state <= next_state;
@@ -153,14 +153,14 @@ module SRT (
                     count <= count + 1;
                     if ((mode == 1'b1 && bram_douta > bram_doutb) || 
                         (mode == 1'b0 && bram_douta < bram_doutb)) begin
-                        // 需要交换：将读出的数据交叉写回
+                        // 需要交换：先将 A 端口读出的数据暂存
+                        temp <= bram_douta;
+                        
+                        // 先向 A 端口写入
                         bram_addra <= j - 1;
                         bram_dina  <= bram_doutb; 
                         bram_wea   <= 1;
-
-                        bram_addrb <= j;
-                        bram_dinb  <= bram_douta;
-                        bram_web   <= 1;
+                        bram_web   <= 0;
                     end
                     else begin
                         // 不需要交换，直接跳转到下一个元素
@@ -176,10 +176,20 @@ module SRT (
                     end
                 end
 
-                S_WRITE: begin
+                S_WRITE1: begin
                     count <= count + 1;
-                    // 写入只需一个周期，立刻关闭写使能
-                    bram_wea <= 0;
+                    // 写只需一个周期，立刻关闭写使能
+                    bram_wea   <= 0;
+
+                    // 再向 B 端口写入
+                    bram_addrb <= j;
+                    bram_dinb  <= temp;
+                    bram_web   <= 1;
+                end
+
+                S_WRITE2: begin
+                    count <= count + 1;
+                    // 写只需一个周期，立刻关闭写使能
                     bram_web <= 0;
                 end
 
@@ -224,14 +234,16 @@ module SRT (
             S_CMP:
                 if ((mode == 1'b1 && bram_douta > bram_doutb) ||    // 升序情况下(1)，前面的数比后面的数更大
                     (mode == 1'b0 && bram_douta < bram_doutb))      // 降序情况下(0)，前面的数比后面的数更小
-                    next_state = S_WRITE;                           // 需要进行数据交换
+                    next_state = S_WRITE1;                          // 需要进行数据交换，进入阶段1
                 else begin  // 否则，直接进行下一轮比较
                     if (j > i + 1 || i < 1022)   // 完整一轮的比较仍未结束，或者后面还有新的一轮比较需要进行
                         next_state = S_READ;
                     else                            // 比较完成
                         next_state = S_DONE;
                 end
-            S_WRITE:
+            S_WRITE1:
+                next_state = S_WRITE2;
+            S_WRITE2:
                 next_state = S_WWAIT;
             S_WWAIT:
                 if (j > i + 1 || i < 1022)   // 完整一轮的比较仍未结束，或者后面还有新的一轮比较需要进行

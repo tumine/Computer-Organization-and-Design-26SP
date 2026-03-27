@@ -14,7 +14,7 @@ module SRT_tb;
     integer error_cnt;      // 记录不符合排序要求的逆序数
 
     // DUT
-    SRT dut (
+    SRT_ipb dut (
         .clk   (clk),
         .rstn  (rstn),
         .mode  (mode),

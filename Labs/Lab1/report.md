@@ -324,53 +324,9 @@ Distributed RAM 的读取基于纯粹的组合逻辑，因此可以即时响应�
 `timescale 1ns / 1ps
 
 // ========================================================
-// 真双端口 BRAM（读优先）
-// ========================================================
-module dual_port_bram #(
-    parameter DATA_WIDTH = 32,
-    parameter ADDR_WIDTH = 10
-)(
-    input  wire                  clk,
-    // 端口 A
-    input  wire                  wea,
-    input  wire [ADDR_WIDTH-1:0] addra,
-    input  wire [DATA_WIDTH-1:0] dina,
-    output reg  [DATA_WIDTH-1:0] douta,
-    // 端口 B
-    input  wire                  web,
-    input  wire [ADDR_WIDTH-1:0] addrb,
-    input  wire [DATA_WIDTH-1:0] dinb,
-    output reg  [DATA_WIDTH-1:0] doutb
-);
-
-    // 定义存储器，深度 1024
-    reg [DATA_WIDTH-1:0] ram [0:(1<<ADDR_WIDTH)-1];
-
-    initial begin
-        // 使用 .txt 文件进行初始化
-        $readmemh("E:/Computer-Organization-and-Design-26SP/Labs/Lab1/Task3/attachments/data.txt", ram);
-    end
-
-    // 端口 A 同步读写
-    always @(posedge clk) begin
-        if (wea)
-            ram[addra] <= dina;
-        douta <= ram[addra];
-    end
-
-    // 端口 B 同步读写
-    always @(posedge clk) begin
-        if (web)
-            ram[addrb] <= dinb;
-        doutb <= ram[addrb];
-    end
-endmodule
-
-
-// ========================================================
 // 冒泡排序主模块 SRT
 // ========================================================
-module SRT (
+module SRT_ipb (
     input  wire        clk,
     input  wire        rstn,
     input  wire        mode,      // 0-降序，1-升序
@@ -390,21 +346,19 @@ module SRT (
     reg         bram_wea,   bram_web;
     wire [31:0] bram_douta, bram_doutb;
 
-    // 实例化 BRAM
-    dual_port_bram #(
-        .DATA_WIDTH(32),
-        .ADDR_WIDTH(10)
-    ) bram (
-        .clk   (clk),
-        .wea   (bram_wea),
-        .addra (bram_addra),
-        .dina  (bram_dina),
-        .douta (bram_douta),
+    // 真双端口 BRAM（ENA Pin 始终启用）
+    blk_mem_gen_0 dual_blk_mem_wfirst (
+        .clka(clk), 
+        .wea(bram_wea), 
+        .addra(bram_addra), 
+        .dina(bram_dina), 
+        .douta(bram_douta),
 
-        .web   (bram_web),
-        .addrb (bram_addrb),
-        .dinb  (bram_dinb),
-        .doutb (bram_doutb)
+        .clkb(clk),
+        .web(bram_web),
+        .addrb(bram_addrb),
+        .dinb(bram_dinb), 
+        .doutb(bram_doutb)
     );
 
     // 查看地址功能映射：空闲或完成时，利用端口 A 读取外部开关指定的地址
@@ -413,18 +367,20 @@ module SRT (
     // --------------------------------------------------------
     // 状态机定义
     // --------------------------------------------------------
-    localparam S_IDLE  = 3'd0; // 空闲/等待
-    localparam S_READ  = 3'd1; // 发送读地址
-    localparam S_RWAIT = 3'd2; // 等待 BRAM 同步读取延迟（1 个周期）
-    localparam S_CMP   = 3'd3; // 比较数据，决定是否交换
-    localparam S_WRITE = 3'd4; // 写入交换后的数据
-    localparam S_WWAIT = 3'd5; // 等待 BRAM 写入，提高电路稳定性
-    localparam S_DONE  = 3'd6; // 排序完成
+    localparam S_IDLE   = 3'd0; // 空闲/等待
+    localparam S_READ   = 3'd1; // 发送读地址
+    localparam S_RWAIT  = 3'd2; // 等待 BRAM 同步读取延迟
+    localparam S_CMP    = 3'd3; // 比较数据，决定是否交换
+    localparam S_WRITE1 = 3'd4; // 向 A 端口写入交换后的数据
+    localparam S_WRITE2 = 3'd5; // 向 B 端口写入交换后的数据，同时兼做等待 a 端口写入
+    localparam S_WWAIT  = 3'd6; // 等待 BRAM 写入，提高电路稳定性
+    localparam S_DONE   = 3'd7; // 排序完成
 
     reg [2:0] current_state, next_state;
 
     reg [9:0] i;       // 外循环: 0 到 1022
     reg [9:0] j;       // 内循环: 1023 到 i + 1
+    reg [31:0] temp;  // 交换写入过程中暂存 dout_a 使用
 
     // --------------------------------------------------------
     // 主控时序逻辑
@@ -441,6 +397,7 @@ module SRT (
             bram_addrb      <= 0;
             bram_dina       <= 0;
             bram_dinb       <= 0;
+            temp            <= 0;
         end 
         else begin
             current_state <= next_state;
@@ -468,22 +425,22 @@ module SRT (
                     bram_addrb <= j;
                 end
 
-                S_RWAIT: begin   // 缓冲 1 个时钟周期，等待 BRAM 将数据推送到 douta 和 doutb
+                S_RWAIT: begin   // 缓冲 1 个时钟周期
                     count <= count + 1;
                 end
 
-                S_CMP: begin    // douta 和 doutb 数据就绪，比较两个位上的数据大小
+                S_CMP: begin    // 使用锁存值比较
                     count <= count + 1;
                     if ((mode == 1'b1 && bram_douta > bram_doutb) || 
                         (mode == 1'b0 && bram_douta < bram_doutb)) begin
-                        // 需要交换：将读出的数据交叉写回
+                        // 需要交换：先将 A 端口读出的数据暂存
+                        temp <= bram_douta;
+
+                        // 先向 A 端口写入
                         bram_addra <= j - 1;
                         bram_dina  <= bram_doutb; 
                         bram_wea   <= 1;
-
-                        bram_addrb <= j;
-                        bram_dinb  <= bram_douta;
-                        bram_web   <= 1;
+                        bram_web   <= 0;
                     end
                     else begin
                         // 不需要交换，直接跳转到下一个元素
@@ -499,10 +456,20 @@ module SRT (
                     end
                 end
 
-                S_WRITE: begin
+                S_WRITE1: begin
                     count <= count + 1;
-                    // 写入只需一个周期，立刻关闭写使能
-                    bram_wea <= 0;
+                    // 写只需一个周期，立刻关闭写使能
+                    bram_wea   <= 0;
+
+                    // 再向 B 端口写入
+                    bram_addrb <= j;
+                    bram_dinb  <= temp;
+                    bram_web   <= 1;
+                end
+
+                S_WRITE2: begin
+                    count <= count + 1;
+                    // 写只需一个周期，立刻关闭写使能
                     bram_web <= 0;
                 end
 
@@ -540,21 +507,23 @@ module SRT (
                     next_state = S_READ;
                 else
                     next_state = S_IDLE; 
-            S_READ: // 从内存中读取，直接跳转到 WAIT 状态等待一个时钟周期
+            S_READ: // 从内存中读取，跳转到等待周期
                 next_state = S_RWAIT;
-            S_RWAIT: // 等待一个时钟周期后读取完毕，跳转到 CMP 状态
+            S_RWAIT: // 等待 1 个时钟周期，使输出端口数据稳定
                 next_state = S_CMP;
             S_CMP:
                 if ((mode == 1'b1 && bram_douta > bram_doutb) ||    // 升序情况下(1)，前面的数比后面的数更大
                     (mode == 1'b0 && bram_douta < bram_doutb))      // 降序情况下(0)，前面的数比后面的数更小
-                    next_state = S_WRITE;                           // 需要进行数据交换
+                    next_state = S_WRITE1;                           // 需要进行数据交换，先准备写入
                 else begin  // 否则，直接进行下一轮比较
                     if (j > i + 1 || i < 1022)   // 完整一轮的比较仍未结束，或者后面还有新的一轮比较需要进行
                         next_state = S_READ;
                     else                            // 比较完成
                         next_state = S_DONE;
                 end
-            S_WRITE:
+            S_WRITE1:
+                next_state = S_WRITE2;
+            S_WRITE2:
                 next_state = S_WWAIT;
             S_WWAIT:
                 if (j > i + 1 || i < 1022)   // 完整一轮的比较仍未结束，或者后面还有新的一轮比较需要进行
@@ -562,7 +531,7 @@ module SRT (
                 else                            // 比较完成
                     next_state = S_DONE;
             S_DONE: begin
-                next_state = S_IDLE;
+                next_state = S_DONE;        // 保持在 DONE 状态，使板上 done 信号对应 LED 持续点亮
             end
             default:    // 对于其它非法状态，直接跳转到 IDLE
                 next_state = S_IDLE;
@@ -578,9 +547,9 @@ module SRT (
 
 endmodule
 ```
-在本任务的实现中，使用自行创建的读优先双端口读写 BRAM。
+在本任务的实现中，使用 IP 核例化的写优先真双端口读写 BRAM。
 
-排序模块中，设计的状态机包括 `IDLE`、`READ`、`RWAIT`、`CMP`、`WRITE`、`WWAIT`、`DONE` 等状态。复位后，状态机默认处于 `IDLE` 状态。
+排序模块中，设计的状态机包括 `IDLE`、`READ`、`RWAIT`、`CMP`、`WRITE1`、`WRITE2`、`WWAIT`、`DONE` 等状态。复位后，状态机默认处于 `IDLE` 状态。
 
 在排序过程中使用了两个临时变量用于指示当前的排序状态。外层循环 `i` 从 0 递增到 1022（`i` 以前的数据已经有序），内层循环 `j` 从 1023 递减到 `i + 1`（把当前最大 / 小的数据移动到有序区段末尾），每次比较相邻两个元素并根据排序模式决定是否交换。
 
@@ -589,20 +558,21 @@ endmodule
 2. 在 `READ` 状态，状态机通过 BRAM 的两个端口分别发送地址 `j - 1` 和 `j`，准备读取相邻的两个数据元素。地址发送完成后，立即跳转到 `RWAIT` 状态。
 3. BRAM 采用同步读取方式，**需要一个时钟周期的延迟才能将数据稳定输出到 `douta` 和 `doutb` 端口**。因此，状态机在 `RWAIT` 状态等待一个时钟周期，等待输出端口的数据稳定后，再跳转到 `CMP` 状态进行数据比较。
 4. 在 `CMP` 状态，排序模块根据排序模式 `mode` 对读取的两个数据进行比较：
-   - 若 `mode = 1`（升序）且 `douta > doutb`，或 `mode = 0`（降序）且 `douta < doutb`，则需要交换两个数据，跳转到 `WRITE` 状态；
+   - 若 `mode = 1`（升序）且 `douta > doutb`，或 `mode = 0`（降序）且 `douta < doutb`，则需要交换两个数据，将 `douta` 存入 `temp`、设置端口 A 的写入地址为 `j - 1`，写入数据为 `douta` 后，跳转到 `WRITE` 状态；
    - 否则，不需要交换。若此时比较仍未结束（`j > i + 1` 或 `i < 1022`），则更新索引并跳转回 `READ` 状态继续下一轮比较；若所有比较已完成，则跳转到 `DONE` 状态。
-5. 在 `WRITE` 状态，状态机将两个数据交叉写回 BRAM 的对应地址（`doutb` 写入地址 `j - 1`，`douta` 写入地址 `j`），并在写入完成后关闭写使能信号，跳转到 `WWAIT` 状态。
-6. 为了提高电路稳定性，状态机在 `WWAIT` 状态等待一个时钟周期，确保数据已稳定写入 BRAM。之后根据循环索引判断下一步的跳转：
+5. 在 `WRITE1` 状态，关闭 A 端口写入使能，同时设置端口 B 的写入地址为 `j`、写入数据为 `temp`，之后跳转到 `WRITE2` 状态。
+6. 在 `WRITE2` 状态，`doutb` 通过端口 A 写入地址 `j - 1`；关闭 B 端口写入使能。之后跳转到 `WWAIT` 状态。
+7. 在 `WWAIT` 状态，`temp(=douta)` 通过端口 B 写入地址 `j`。同时根据循环索引判断下一步的跳转：
    - 若比较仍未结束（`j > i + 1` 或 `i < 1022`），则更新索引并跳转回 `READ` 状态；
    - 若所有比较已完成，则跳转到 `DONE` 状态。
-7. 在 `DONE` 状态时，状态机将 `done` 信号置为有效，并将 BRAM 端口 A 再次开放给外部拨码开关以便查看排序后的数据。之后立即跳转回 `IDLE` 状态，等待下一次排序请求。
+8. 在 `DONE` 状态时，状态机将 `done` 信号置为有效，并将 BRAM 端口 A 再次开放给外部拨码开关以便查看排序后的数据。为了保证上板运行时 `done` 对应的信号能持续有效，`DONE` 状态将一直维持，直到 `rstn` 信号重置整个状态机。
 
 ### Task 3-2
 LUT、FF 等资源的使用情况如下图：
 ![冒泡排序 LUT、FF 等资源使用情况](attachments/pic_task3_util.png)
 
-经过测试，当时钟周期为 $7.1\,\text{ns}$ 时，WNS 达到 $0.045\,\text{ns}$，故电路正常工作的最高时钟频率约为 $141.7\,\text{MHz}$。
-![冒泡排序在时钟周期 7.1ns 下的时序情况](attachments/pic_task3_wns.png)
+经过测试，当时钟周期为 $7.123\,\text{ns}$ 时，WNS 达到 $0.076\,\text{ns}$，故电路正常工作的最高时钟频率约为 $141.90\,\text{MHz}$。
+![冒泡排序在时钟周期 7.123ns 下的时序情况](attachments/pic_task3_wns.png)
 
 ## Task X
 ### Task X-2
@@ -611,7 +581,7 @@ LUT、FF 等资源的使用情况如下图：
 `timescale 1ns / 1ps
 
 // ========================================================
-// 真双端口 BRAM（读优先）
+// 真双端口 BRAM（读优先，双读单写）
 // ========================================================
 module dual_port_bram #(
     parameter DATA_WIDTH = 32,
@@ -629,16 +599,23 @@ module dual_port_bram #(
     input  wire [DATA_WIDTH-1:0] dinb,
     output reg  [DATA_WIDTH-1:0] doutb
 );
+
+    // 定义存储器，深度 1024
     reg [DATA_WIDTH-1:0] ram [0:(1<<ADDR_WIDTH)-1];
+
     initial begin
+        // 使用 .txt 文件进行初始化
         $readmemh("E:/Computer-Organization-and-Design-26SP/Labs/Lab1/Task3/attachments/data.txt", ram);
     end
+
+    // 同步读写，同一周期只能向一个端口写入（A 端口优先）
     always @(posedge clk) begin
-        if (wea) ram[addra] <= dina;
+        if (wea)
+            ram[addra] <= dina;
+        else if (web)
+            ram[addrb] <= dinb;
+            
         douta <= ram[addra];
-    end
-    always @(posedge clk) begin
-        if (web) ram[addrb] <= dinb;
         doutb <= ram[addrb];
     end
 endmodule
@@ -684,7 +661,7 @@ module SRTX2 (
     assign data = bram_douta;
 
     // --------------------------------------------------------
-    // 硬件栈定义：存储 {low, high} 索引对
+    // 硬件栈存储 {low, high} 区间索引对
     // 使用 11 位有符号数防止 i = low - 1 时出现下溢
     // --------------------------------------------------------
     reg [21:0] stack [0:1023]; 
@@ -693,25 +670,30 @@ module SRTX2 (
     // --------------------------------------------------------
     // 状态机定义
     // --------------------------------------------------------
-    localparam S_IDLE             = 5'd0;   // 空闲/等待
-    localparam S_POP              = 5'd1;   // 出栈：从栈中取出子数组 [low, high]；若栈空则排序完成
-    localparam S_READ_PIVOT       = 5'd2;   // 读取基准：发送地址 high 到 BRAM，读取 bram[high] 作为基准（pivot）
-    localparam S_WAIT_PIVOT       = 5'd3;   // 等待 BRAM 同步读取延迟
-    localparam S_LATCH_PIVOT      = 5'd4;   // 锁存基准值：pivot_val = bram[high]，初始化 i = low - 1, j = low
-    localparam S_LOOP_COND        = 5'd5;   // 循环条件：判断 j < high，决定继续分区或结束循环
-    localparam S_WAIT_J           = 5'd6;   // 等待 bram[j] 读取完成
-    localparam S_LATCH_J          = 5'd7;   // 锁存 bram[j] 到 val_j
-    localparam S_CMP              = 5'd8;   // 比较：判断 val_j 与 pivot_val 大小，决定是否交换
-    localparam S_WAIT_I           = 5'd9;   // 等待 bram[i] 读取完成
-    localparam S_LATCH_I          = 5'd10;  // 锁存 bram[i] 到 val_i
-    localparam S_SWAP             = 5'd11;  // 交换元素：交叉写入 bram[i] = val_j, bram[j] = val_i
-    localparam S_SWAP_WAIT        = 5'd12;  // 交换写入等待
-    localparam S_SWAP_PIVOT_READ  = 5'd13;  // 读取 i+1 处的值，准备与 pivot 进行交换
-    localparam S_WAIT_PIVOT_SWAP  = 5'd14;  // 等待 bram[i+1] 读取完成
-    localparam S_LATCH_PIVOT_SWAP = 5'd15;  // 锁存 bram[i+1] 到 val_i1
-    localparam S_SWAP_PIVOT_WRITE = 5'd16;  // 写入基准：将 pivot 与 bram[i+1] 交换，基准归位
-    localparam S_PUSH             = 5'd17;  // pivot 写入等待，同时将分区产生的子数组 [low, pivot-1] 和 [pivot+1, high] 压栈
-    localparam S_DONE             = 5'd18;  // 排序完成
+    localparam S_IDLE                   = 5'd0;   // 空闲/等待
+    localparam S_POP                    = 5'd1;   // 出栈：从栈中取出子数组 [low, high]；若栈空则排序完成
+    localparam S_READ_PIVOT             = 5'd2;   // 读取基准：发送地址 high 到 BRAM，读取 bram[high] 作为基准（pivot）
+    localparam S_WAIT_PIVOT             = 5'd3;   // 等待 BRAM 同步读取延迟
+    localparam S_LATCH_PIVOT            = 5'd4;   // 锁存基准值：pivot_val = bram[high]，初始化 i = low - 1, j = low
+    localparam S_LOOP_COND              = 5'd5;   // 循环条件：判断 j < high，决定继续分区或结束循环
+    localparam S_WAIT_J                 = 5'd6;   // 等待 bram[j] 读取完成
+    localparam S_LATCH_J                = 5'd7;   // 锁存 bram[j] 到 val_j
+    localparam S_CMP                    = 5'd8;   // 比较：判断 val_j 与 pivot_val 大小，决定是否交换
+    localparam S_WAIT_I                 = 5'd9;   // 等待 bram[i] 读取完成
+    localparam S_LATCH_I                = 5'd10;  // 锁存 bram[i] 到 val_i
+    localparam S_SWAP1                  = 5'd11;  // 交换写入端口 A：写入 bram[i] = val_j
+    localparam S_SWAP2                  = 5'd12;  // 交换写入端口 B：写入 bram[j] = val_i（兼关闭 A 端口写入）
+    localparam S_SWAP_WAIT1             = 5'd13;  // 交换写入：关闭 B 端口写入（兼等待 A 端口写入）
+    localparam S_SWAP_WAIT2             = 5'd14;  // 交换写入：等待 B 端口写入
+    localparam S_SWAP_PIVOT_READ        = 5'd15;  // 读取 i+1 处的值，准备与 pivot 进行交换
+    localparam S_WAIT_PIVOT_SWAP        = 5'd16;  // 等待 bram[i+1] 读取完成
+    localparam S_LATCH_PIVOT_SWAP       = 5'd17;  // 锁存 bram[i+1] 到 val_i1
+    localparam S_SWAP_PIVOT_WRITE1      = 5'd18;  // 写入 A 端口：将 pivot 写入 bram[i+1]
+    localparam S_SWAP_PIVOT_WRITE2      = 5'd19;  // 写入 B 端口：将 val_i1 写入 bram[high]（兼关闭 A 端口写入）
+    localparam S_SWAP_PIVOT_WAIT1       = 5'd20;  // pivot 归位：关闭 B 端口写入（兼等待 A 端口写入）
+    localparam S_SWAP_PIVOT_WAIT2       = 5'd21;  // pivot 归位：等待 B 端口写入
+    localparam S_PUSH                   = 5'd22;  // 将分区产生的子数组 [low, pivot-1] 和 [pivot+1, high] 压栈
+    localparam S_DONE                   = 5'd23;  // 排序完成
 
     reg [4:0] current_state, next_state;
     
@@ -831,24 +813,31 @@ module SRTX2 (
                     val_i <= bram_doutb; 
                 end
                 
-                S_SWAP: begin
+                S_SWAP1: begin
                     count <= count + 1;
-                    // 交叉写入，交换数据
-                    bram_wea   <= 1;
-                    bram_addra <= i;
-                    bram_dina  <= val_j;
+                    bram_wea    <= 1;
+                    bram_addra  <= i;
+                    bram_dina   <= val_j;
 
-                    bram_web   <= 1;
-                    bram_addrb <= j;
-                    bram_dinb  <= val_i;
+                    bram_web    <= 0;
+                    bram_addrb  <= j;
+                    bram_dinb   <= val_i;
+                end
+                
+                S_SWAP2: begin
+                    count <= count + 1;
+                    bram_wea    <= 0;
+                    bram_web    <= 1;
                     j <= j + 1;
                 end
                 
-                S_SWAP_WAIT: begin
+                S_SWAP_WAIT1: begin
                     count <= count + 1;
-                    // 写入只需一个周期，立刻关闭写使能
-                    bram_wea <= 0;
                     bram_web <= 0;
+                end
+
+                S_SWAP_WAIT2: begin
+                    count <= count + 1;
                 end
 
                 // --- 循环结束后，将基准元素放到 i+1 索引处---
@@ -867,15 +856,30 @@ module SRTX2 (
                     val_i1 <= bram_douta;
                 end
                 
-                S_SWAP_PIVOT_WRITE: begin
+                S_SWAP_PIVOT_WRITE1: begin  // 先写 A 端口，把 pivot 归位；同时可以先把 B 端口待写入的数据准备好
                     count <= count + 1;
                     bram_wea <= 1;
                     bram_addra <= pivot_idx;
                     bram_dina <= pivot_val;
 
-                    bram_web <= 1;
+                    bram_web <= 0;
                     bram_addrb <= high;
                     bram_dinb <= val_i1;
+                end
+                
+                S_SWAP_PIVOT_WRITE2: begin  // 再写 B 端口
+                    count <= count + 1;
+                    bram_wea <= 0;
+                    bram_web <= 1;
+                end
+                
+                S_SWAP_PIVOT_WAIT1: begin
+                    count <= count + 1;
+                    bram_web <= 0;
+                end
+
+                S_SWAP_PIVOT_WAIT2: begin
+                    count <= count + 1;
                 end
 
                 // --- 将产生的新子数组索引压入栈 ---
@@ -955,12 +959,18 @@ module SRTX2 (
                 next_state = S_LATCH_I;
 
             S_LATCH_I:
-                next_state = S_SWAP;
+                next_state = S_SWAP1;
 
-            S_SWAP:
-                next_state = S_SWAP_WAIT;
+            S_SWAP1:
+                next_state = S_SWAP2;
 
-            S_SWAP_WAIT:
+            S_SWAP2:
+                next_state = S_SWAP_WAIT1;
+
+            S_SWAP_WAIT1:
+                next_state = S_SWAP_WAIT2;
+                
+            S_SWAP_WAIT2:
                 next_state = S_LOOP_COND;
 
             S_SWAP_PIVOT_READ:
@@ -970,9 +980,18 @@ module SRTX2 (
                 next_state = S_LATCH_PIVOT_SWAP;
 
             S_LATCH_PIVOT_SWAP:
-                next_state = S_SWAP_PIVOT_WRITE;
+                next_state = S_SWAP_PIVOT_WRITE1;
 
-            S_SWAP_PIVOT_WRITE:
+            S_SWAP_PIVOT_WRITE1:
+                next_state = S_SWAP_PIVOT_WRITE2;
+
+            S_SWAP_PIVOT_WRITE2:
+                next_state = S_SWAP_PIVOT_WAIT1;
+
+            S_SWAP_PIVOT_WAIT1:
+                next_state = S_SWAP_PIVOT_WAIT2;
+                
+            S_SWAP_PIVOT_WAIT2:
                 next_state = S_PUSH;
 
             S_PUSH:
@@ -996,7 +1015,7 @@ endmodule
 ```
 在本任务的实现中，使用自行创建的读优先双端口读写 BRAM。
 
-排序模块基于快速排序算法，固定每轮排序的 pivot 为区间最后一个元素，通过硬件栈存储待处理的子数组索引，实现算法的非递归化。在排序模块中设计的状态机包括 19 种状态；复位后，状态机默认处于 `IDLE` 状态。
+排序模块基于快速排序算法，固定每轮排序的 pivot 为区间最后一个元素，通过硬件栈存储待处理的子数组索引，实现算法的非递归化。在排序模块中设计的状态机包括 24 种状态；复位后，状态机默认处于 `IDLE` 状态。
 
 为实现快速排序的递归逻辑，模块内维护一个深度为 1024 的硬件栈 `stack`，每个栈元素存储一个索引对 `{low, high}`，表示待排序的子数组范围。栈顶指针 `sp` 用于追踪栈的当前深度。
 
@@ -1006,47 +1025,64 @@ endmodule
 3. 在 `READ_PIVOT` 状态，状态机通过 BRAM 端口 A 发送地址 `high`，读取区间末尾元素 `bram[high]` 作为基准（pivot）。地址发送完成后，立即跳转到 `WAIT_PIVOT` 状态。
 4. BRAM 采用同步读取方式，需要一个时钟周期的延迟才能将数据稳定输出。因此，状态机在 `WAIT_PIVOT` 状态等待一个时钟周期，**等待输出端口的数据稳定后**，再跳转到 `LATCH_PIVOT` 状态。
 5. 在 `LATCH_PIVOT` 状态，状态机将基准值锁存到 `pivot_val`，并初始化分区索引 `i = low - 1` 和扫描索引 `j = low`，之后跳转到 `LOOP_COND` 状态。
-6. 在 `LOOP_COND` 状态，状态机判断分区循环条件 `j < high`：若条件成立，则通过 BRAM 端口 A 发送地址 `j` 读取 `bram[j]`，并跳转到 `WAIT_J` 状态继续分区；若条件不成立，说明分区循环已结束，跳转到 `SWAP_PIVOT_READ` 状态将基准放到正确位置。
+6. 在 `LOOP_COND` 状态，状态机判断分区循环条件 `j < high`：
+   - 若条件成立，则通过 BRAM 端口 A 发送地址 `j` 读取 `bram[j]`，并跳转到 `WAIT_J` 状态继续分区；
+   - 若条件不成立且 `i + 1 == high`（说明 pivot 已经在正确位置 `high`，无需归位交换），此时同时将 `pivot_idx = i + 1` 锁存，直接跳转到 `PUSH` 状态；
+   - 若条件不成立且 `i + 1 != high`，则跳转到 `SWAP_PIVOT_READ` 状态将基准放到正确位置。
 7. 在 `WAIT_J` 状态，状态机等待 BRAM 将 `bram[j]` 的数据稳定输出，等待一个时钟周期后跳转到 `LATCH_J` 状态。
 8. 在 `LATCH_J` 状态，状态机将 `bram[j]` 锁存到 `val_j`，跳转到 `CMP` 状态进行比较判断。
 9. 在 `CMP` 状态，状态机根据排序模式 `mode` 比较 `val_j` 与 `pivot_val`：
-   - 若 `mode = 1`（升序）且 `val_j <= pivot_val`，或 `mode = 0`（降序）且 `val_j >= pivot_val`，则将 `i` 自增，并通过 BRAM 端口 B 发送地址 `i + 1` 读取 `bram[i + 1]`，跳转到 `WAIT_I` 状态准备交换；
+   - 若满足交换条件（升序时 `val_j <= pivot_val`，降序时 `val_j >= pivot_val`），则将 `i` 自增：
+     - 若此时 `i + 1 == j`（即与自身交换，无意义），则直接将 `j` 自增并跳转回 `LOOP_COND` 状态，**跳过本次交换**；
+     - 否则，通过 BRAM 端口 B 发送地址 `i + 1` 准备读取 `bram[i + 1]`，跳转到 `WAIT_I` 状态；
    - 否则，直接将 `j` 自增并跳转回 `LOOP_COND` 状态继续下一轮循环。
 10. 在 `WAIT_I` 状态，状态机等待 BRAM 将 `bram[i + 1]` 的数据稳定输出，等待一个时钟周期后跳转到 `LATCH_I` 状态。
-11. 在 `LATCH_I` 状态，状态机将 `bram[i + 1]` 锁存到 `val_i`，跳转到 `SWAP` 状态执行交换。
-12. 在 `SWAP` 状态，状态机通过 BRAM 的两个端口**交叉写入数据**：将 `val_j` 写入地址 `i`，将 `val_i` 写入地址 `j`，实现 `bram[i]` 和 `bram[j]` 的交换。同时将 `j` 自增，跳转到 `SWAP_WAIT` 状态。
-13. 在 `SWAP_WAIT` 状态，确保数据已稳定写入 BRAM。之后跳转回 `LOOP_COND` 状态继续分区循环。
-14. 在 `SWAP_PIVOT_READ` 状态，分区循环已结束，状态机准备将基准放到正确位置 `i + 1`。通过 BRAM 端口 A 发送地址 `i + 1` 读取 `bram[i + 1]`，跳转到 `WAIT_PIVOT_SWAP` 状态。
-15. 在 `WAIT_PIVOT_SWAP` 状态，状态机等待 BRAM 将 `bram[i + 1]` 的数据稳定输出，等待一个时钟周期后跳转到 `LATCH_PIVOT_SWAP` 状态。
-16. 在 `LATCH_PIVOT_SWAP` 状态，状态机将 `bram[i + 1]` 锁存到 `val_i1`，跳转到 `SWAP_PIVOT_WRITE` 状态执行基准交换。
-17. 在 `SWAP_PIVOT_WRITE` 状态，状态机将基准值 `pivot_val` 写入地址 `pivot_idx = i + 1`，将 `val_i1` 写入地址 `high`，实现基准与 `bram[i + 1]` 的交换，**使基准归位到最终位置**。之后跳转到 `PUSH` 状态。
-18. `PUSH` 状态兼作为基准交换写入的等待状态。在 `PUSH` 状态，状态机根据分区结果，将新产生的子数组索引压入栈中：
+11. 在 `LATCH_I` 状态，状态机将 `bram[i + 1]` 锁存到 `val_i`，跳转到 `SWAP1` 状态执行交换。
+12. 在 `SWAP1` 状态，仅通过端口 A 写入 `bram[i] = val_j`（打开 A 写入使能，关闭 B 写入使能）；同时预填 B 端口的写入数据 `val_i`，但**不预设 B 端口地址**（以防止和 A 端口产生同地址冲突）。随后跳转到 `SWAP2` 状态。
+13. 在 `SWAP2` 状态，关闭 A 端口的写入，设置 B 端口写入地址为 `j`、写入数据为 `val_i`，并打开 B 端口写入（此时 A 端口已关闭，两端口不会产生冲突）；同时将 `j` 自增，随后跳转到 `SWAP_WAIT1` 状态。
+14. 在 `SWAP_WAIT1` 状态，关闭 B 端口的写入，随后跳转到 `SWAP_WAIT2` 状态。
+15. 在 `SWAP_WAIT2` 状态，确保数据已稳定写入 BRAM。之后跳转回 `LOOP_COND`。
+16. 在 `SWAP_PIVOT_READ` 状态，分区循环已结束，状态机准备将基准放到正确位置 `i + 1`，同时将 `pivot_idx = i + 1` 锁存。通过 BRAM 端口 A 发送地址 `i + 1` 读取 `bram[i + 1]`，跳转到 `WAIT_PIVOT_SWAP` 状态。
+17. 在 `WAIT_PIVOT_SWAP` 状态，状态机等待 BRAM 将 `bram[i + 1]` 的数据稳定输出，等待一个时钟周期后跳转到 `LATCH_PIVOT_SWAP` 状态。
+18. 在 `LATCH_PIVOT_SWAP` 状态，状态机将 `bram[i + 1]` 锁存到 `val_i1`，跳转到 `SWAP_PIVOT_WRITE1` 状态执行基准交换。
+19. 在 `SWAP_PIVOT_WRITE1` 状态，仅通过端口 A 写入 `bram[pivot_idx] = pivot_val`（打开 A 写入使能，关闭 B 写入使能）；同时预填 B 端口的写入数据 `val_i1`，但**不预设 B 端口地址**，以防止 `pivot_idx == high` 时两端口同地址冲突。之后跳转到 `SWAP_PIVOT_WRITE2` 状态。
+20. 在 `SWAP_PIVOT_WRITE2` 状态，关闭 A 端口写入，设置 B 端口写入地址为 `high`，并打开 B 端口写入（此时 A 端口已关闭，两端口不会产生冲突），随后跳转到 `SWAP_PIVOT_WAIT1` 状态。
+21. 在 `SWAP_PIVOT_WAIT1` 状态，关闭 B 端口写入，随后跳转到 `SWAP_PIVOT_WAIT2` 状态。
+22. 在 `SWAP_PIVOT_WAIT2` 状态，确保数据已稳定写入 BRAM。之后跳转到 `PUSH`。
+23. 在 `PUSH` 状态，状态机根据分区结果，将新产生的子数组索引压入栈中：
     - 若 `low < pivot_idx - 1`，则左子数组 `[low, pivot_idx - 1]` 有效，将其压栈；
     - 若 `pivot_idx + 1 < high`，则右子数组 `[pivot_idx + 1, high]` 有效，将其压栈；
     - 压栈完成后，跳转回 `POP` 状态处理下一个子数组。
-19. 在 `DONE` 状态时，状态机将 `done` 信号置为有效，并将 BRAM 端口 A 再次开放给外部拨码开关以便查看排序后的数据，随后跳转回 `IDLE` 状态，等待下一次排序请求。
+24. 在 `DONE` 状态时，状态机将 `done` 信号置为有效，并将 BRAM 端口 A 再次开放给外部拨码开关以便查看排序后的数据。为保证上板运行时 `done` 对应信号持续有效，`DONE` 状态将一直维持，直到 `rstn` 信号重置整个状态机。
 
 #### 资源使用、性能比较
+##### LUT、FF 等资源使用情况
 快速排序实现的 LUT、FF 等资源使用情况如下：
 ![快速排序 LUT、FF 等资源使用情况](attachments/pic_taskx_util.png)
 
-经过测试，当时钟周期为 $10.1\,\text{ns}$ 时，WNS 达到 $0.092\,\text{ns}$，故电路正常工作的最高时钟频率约为 $99.92\,\text{MHz}$。
-![快速排序在时钟周期 10.1ns 下的时序情况](attachments/pic_taskx_wns.png)
+##### 最高时钟频率
+经过测试，当时钟周期为 $5.9\,\text{ns}$ 时，WNS 达到 $0.076\,\text{ns}$，故电路正常工作的最高时钟频率约为 $171.70\,\text{MHz}$。
+![快速排序在时钟周期 5.9ns 下的时序情况](attachments/pic_taskx_wns.png)
+
+##### 排序速度
+对 `data.coe` 中的数据进行降序冒泡排序时，共花费 `0x243327=2372391` 个时钟周期；进行升序冒泡排序时，共花费 `0x23BAD9=2341593` 个时钟周期。
+
+对 `data.coe` 中的数据进行降序快速排序时，共花费 `0x14C64=85092` 个时钟周期；进行升序快速排序时，共花费 `0x12B6C=76652` 个时钟周期。
+
+---
 
 从硬件实现角度分析，快速排序相比冒泡排序需要更多的电路资源，主要体现在以下几个方面：
 
-1. **状态机复杂度**：冒泡排序的状态机仅有 7 个状态，使用 3 位状态寄存器即可表示；而快速排序的状态机包含 19 个状态，需要 5 位状态寄存器。更复杂的状态转换逻辑会消耗更多的组合逻辑资源。
+1. **状态机复杂度**：冒泡排序的状态机仅有 7 个状态，使用 3 位状态寄存器即可表示；而快速排序的状态机包含 24 个状态，需要 5 位状态寄存器。更复杂的状态转换逻辑会消耗更多的组合逻辑资源。
 
 2. **存储资源**：非递归化的快速排序过程需要额外的硬件栈来存储待处理的子数组索引。在实现本任务时使用的栈深度为 1024，每个栈元素存储一个 22 位的索引对 `{low, high}`，总共需要 $1024 \times 22 = 22528$ 位的存储空间。此外，快速排序还需要维护多个辅助寄存器（`pivot_val`、`val_j`、`val_i`、`val_i1` 等）用于暂存中间数据。
 
 3. **运算逻辑**：快速排序在分区过程中需要进行复杂的比较和索引计算，涉及有符号数的计算；冒泡排序的运算逻辑相对更简单，主要涉及无符号数的递减和比较操作。
 
-从综合实现结果来看，冒泡排序的最高工作频率约为 $141.7\,\text{MHz}$，而快速排序的最高工作频率约为 $99.92\,\text{MHz}$。快速排序的关键路径更长，主要原因包括：
-   - 更复杂的状态转换逻辑
-   - 硬件栈的读写操作
-   - 多个比较器的级联逻辑
-   - 有符号数运算电路
+从综合实现结果来看，冒泡排序的最高工作频率约为 $141.90\,\text{MHz}$，而快速排序的最高工作频率约为 $171.70\,\text{MHz}$。尽管快速排序包含更复杂的状态转换逻辑、硬件栈的读写以及有符号数运算电路，其关键路径反而更短，主要原因可能包括：
+   - 快速排序在单个状态内执行的操作被拆分得更细緻，减少了单周期内组合逻辑的级联延迟；
+   - BRAM 读写、比较等操作的流水线排布更加合理，关键路径得到了综合器的更好优化。
 
-虽然快速排序的硬件实现更复杂、工作频率更低，但从算法复杂度角度分析，快速排序的平均时间复杂度为 $O(n \log n)$，而冒泡排序的时间复杂度为 $O(n^2)$。对于大规模数据，快速排序在排序耗时上具有显著优势，能够以更少的比较和交换次数完成排序。
+从算法复杂度角度分析，快速排序的平均时间复杂度为 $O(n \log n)$，而冒泡排序的时间复杂度为 $O(n^2)$。对于大规模数据，快速排序所需时钟周期数（万周期级）仅为冒泡排序（百万周期级）的极小部分。结合其更高的最高工作频率，快速排序在整体耗时上具有绝对优势。
 
-总的来看，两种排序算法的硬件实现分别注重算法复杂度和硬件开销的优化。冒泡排序实现简单、资源占用少、工作频率高，适合对**硬件资源受限**或对排序速度要求不高的场景；快速排序虽然需要更多的硬件资源和更低的时钟频率，但其算法效率优势在**大规模数据排序**中能够弥补硬件开销，适合对排序性能有较高要求的应用场景。
+总的来看，两种排序算法的硬件实现分别呈现了不同的开销与性能特征。冒泡排序实现简单、状态机规模小、LUT 和 FF 等逻辑资源占用少，适合**硬件资源受限**且对排序速度要求不高的场景；快速排序虽然需要较多的额外硬件资源（如维护硬件栈的存储资源、更多状态寄存器），但其凭借极高的算法效率和更好的时序表现，在**大规模数据排序**中能够充分弥补硬件开销，适合对排序性能有较高要求的应用场景。

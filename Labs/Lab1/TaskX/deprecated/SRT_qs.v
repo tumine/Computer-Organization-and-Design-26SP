@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 
 // ========================================================
-// 真双端口 BRAM（读优先）
+// 真双端口 BRAM（读优先，双读单写）
 // ========================================================
 module dual_port_bram #(
     parameter DATA_WIDTH = 32,
@@ -19,16 +19,23 @@ module dual_port_bram #(
     input  wire [DATA_WIDTH-1:0] dinb,
     output reg  [DATA_WIDTH-1:0] doutb
 );
+
+    // 定义存储器，深度 1024
     reg [DATA_WIDTH-1:0] ram [0:(1<<ADDR_WIDTH)-1];
+
     initial begin
+        // 使用 .txt 文件进行初始化
         $readmemh("E:/Computer-Organization-and-Design-26SP/Labs/Lab1/Task3/attachments/data.txt", ram);
     end
+
+    // 同步读写，同一周期只能向一个端口写入（A 端口优先）
     always @(posedge clk) begin
-        if (wea) ram[addra] <= dina;
+        if (wea)
+            ram[addra] <= dina;
+        else if (web)
+            ram[addrb] <= dinb;
+            
         douta <= ram[addra];
-    end
-    always @(posedge clk) begin
-        if (web) ram[addrb] <= dinb;
         doutb <= ram[addrb];
     end
 endmodule
@@ -83,25 +90,30 @@ module SRTX2 (
     // --------------------------------------------------------
     // 状态机定义
     // --------------------------------------------------------
-    localparam S_IDLE             = 5'd0;   // 空闲/等待
-    localparam S_POP              = 5'd1;   // 出栈：从栈中取出子数组 [low, high]；若栈空则排序完成
-    localparam S_READ_PIVOT       = 5'd2;   // 读取基准：发送地址 high 到 BRAM，读取 bram[high] 作为基准（pivot）
-    localparam S_WAIT_PIVOT       = 5'd3;   // 等待 BRAM 同步读取延迟
-    localparam S_LATCH_PIVOT      = 5'd4;   // 锁存基准值：pivot_val = bram[high]，初始化 i = low - 1, j = low
-    localparam S_LOOP_COND        = 5'd5;   // 循环条件：判断 j < high，决定继续分区或结束循环
-    localparam S_WAIT_J           = 5'd6;   // 等待 bram[j] 读取完成
-    localparam S_LATCH_J          = 5'd7;   // 锁存 bram[j] 到 val_j
-    localparam S_CMP              = 5'd8;   // 比较：判断 val_j 与 pivot_val 大小，决定是否交换
-    localparam S_WAIT_I           = 5'd9;   // 等待 bram[i] 读取完成
-    localparam S_LATCH_I          = 5'd10;  // 锁存 bram[i] 到 val_i
-    localparam S_SWAP             = 5'd11;  // 交换元素：交叉写入 bram[i] = val_j, bram[j] = val_i
-    localparam S_SWAP_WAIT        = 5'd12;  // 交换写入等待
-    localparam S_SWAP_PIVOT_READ  = 5'd13;  // 读取 i+1 处的值，准备与 pivot 进行交换
-    localparam S_WAIT_PIVOT_SWAP  = 5'd14;  // 等待 bram[i+1] 读取完成
-    localparam S_LATCH_PIVOT_SWAP = 5'd15;  // 锁存 bram[i+1] 到 val_i1
-    localparam S_SWAP_PIVOT_WRITE = 5'd16;  // 写入基准：将 pivot 与 bram[i+1] 交换，基准归位
-    localparam S_PUSH             = 5'd17;  // pivot 写入等待，同时将分区产生的子数组 [low, pivot-1] 和 [pivot+1, high] 压栈
-    localparam S_DONE             = 5'd18;  // 排序完成
+    localparam S_IDLE                   = 5'd0;   // 空闲/等待
+    localparam S_POP                    = 5'd1;   // 出栈：从栈中取出子数组 [low, high]；若栈空则排序完成
+    localparam S_READ_PIVOT             = 5'd2;   // 读取基准：发送地址 high 到 BRAM，读取 bram[high] 作为基准（pivot）
+    localparam S_WAIT_PIVOT             = 5'd3;   // 等待 BRAM 同步读取延迟
+    localparam S_LATCH_PIVOT            = 5'd4;   // 锁存基准值：pivot_val = bram[high]，初始化 i = low - 1, j = low
+    localparam S_LOOP_COND              = 5'd5;   // 循环条件：判断 j < high，决定继续分区或结束循环
+    localparam S_WAIT_J                 = 5'd6;   // 等待 bram[j] 读取完成
+    localparam S_LATCH_J                = 5'd7;   // 锁存 bram[j] 到 val_j
+    localparam S_CMP                    = 5'd8;   // 比较：判断 val_j 与 pivot_val 大小，决定是否交换
+    localparam S_WAIT_I                 = 5'd9;   // 等待 bram[i] 读取完成
+    localparam S_LATCH_I                = 5'd10;  // 锁存 bram[i] 到 val_i
+    localparam S_SWAP1                  = 5'd11;  // 交换写入端口 A：写入 bram[i] = val_j
+    localparam S_SWAP2                  = 5'd12;  // 交换写入端口 B：写入 bram[j] = val_i（兼关闭 A 端口写入）
+    localparam S_SWAP_WAIT1             = 5'd13;  // 交换写入：关闭 B 端口写入（兼等待 A 端口写入）
+    localparam S_SWAP_WAIT2             = 5'd14;  // 交换写入：等待 B 端口写入
+    localparam S_SWAP_PIVOT_READ        = 5'd15;  // 读取 i+1 处的值，准备与 pivot 进行交换
+    localparam S_WAIT_PIVOT_SWAP        = 5'd16;  // 等待 bram[i+1] 读取完成
+    localparam S_LATCH_PIVOT_SWAP       = 5'd17;  // 锁存 bram[i+1] 到 val_i1
+    localparam S_SWAP_PIVOT_WRITE1      = 5'd18;  // 写入 A 端口：将 pivot 写入 bram[i+1]
+    localparam S_SWAP_PIVOT_WRITE2      = 5'd19;  // 写入 B 端口：将 val_i1 写入 bram[high]（兼关闭 A 端口写入）
+    localparam S_SWAP_PIVOT_WAIT1       = 5'd20;  // pivot 归位：关闭 B 端口写入（兼等待 A 端口写入）
+    localparam S_SWAP_PIVOT_WAIT2       = 5'd21;  // pivot 归位：等待 B 端口写入
+    localparam S_PUSH                   = 5'd22;  // 将分区产生的子数组 [low, pivot-1] 和 [pivot+1, high] 压栈
+    localparam S_DONE                   = 5'd23;  // 排序完成
 
     reg [4:0] current_state, next_state;
     
@@ -221,24 +233,31 @@ module SRTX2 (
                     val_i <= bram_doutb; 
                 end
                 
-                S_SWAP: begin
+                S_SWAP1: begin
                     count <= count + 1;
-                    // 交叉写入，交换数据
-                    bram_wea   <= 1;
-                    bram_addra <= i;
-                    bram_dina  <= val_j;
+                    bram_wea    <= 1;
+                    bram_addra  <= i;
+                    bram_dina   <= val_j;
 
-                    bram_web   <= 1;
-                    bram_addrb <= j;
-                    bram_dinb  <= val_i;
+                    bram_web    <= 0;
+                    bram_addrb  <= j;
+                    bram_dinb   <= val_i;
+                end
+                
+                S_SWAP2: begin
+                    count <= count + 1;
+                    bram_wea    <= 0;
+                    bram_web    <= 1;
                     j <= j + 1;
                 end
                 
-                S_SWAP_WAIT: begin
+                S_SWAP_WAIT1: begin
                     count <= count + 1;
-                    // 写入只需一个周期，立刻关闭写使能
-                    bram_wea <= 0;
                     bram_web <= 0;
+                end
+
+                S_SWAP_WAIT2: begin
+                    count <= count + 1;
                 end
 
                 // --- 循环结束后，将基准元素放到 i+1 索引处---
@@ -257,15 +276,30 @@ module SRTX2 (
                     val_i1 <= bram_douta;
                 end
                 
-                S_SWAP_PIVOT_WRITE: begin
+                S_SWAP_PIVOT_WRITE1: begin  // 先写 A 端口，把 pivot 归位；同时可以先把 B 端口待写入的数据准备好
                     count <= count + 1;
                     bram_wea <= 1;
                     bram_addra <= pivot_idx;
                     bram_dina <= pivot_val;
 
-                    bram_web <= 1;
+                    bram_web <= 0;
                     bram_addrb <= high;
                     bram_dinb <= val_i1;
+                end
+                
+                S_SWAP_PIVOT_WRITE2: begin  // 再写 B 端口
+                    count <= count + 1;
+                    bram_wea <= 0;
+                    bram_web <= 1;
+                end
+                
+                S_SWAP_PIVOT_WAIT1: begin
+                    count <= count + 1;
+                    bram_web <= 0;
+                end
+
+                S_SWAP_PIVOT_WAIT2: begin
+                    count <= count + 1;
                 end
 
                 // --- 将产生的新子数组索引压入栈 ---
@@ -345,12 +379,18 @@ module SRTX2 (
                 next_state = S_LATCH_I;
 
             S_LATCH_I:
-                next_state = S_SWAP;
+                next_state = S_SWAP1;
 
-            S_SWAP:
-                next_state = S_SWAP_WAIT;
+            S_SWAP1:
+                next_state = S_SWAP2;
 
-            S_SWAP_WAIT:
+            S_SWAP2:
+                next_state = S_SWAP_WAIT1;
+
+            S_SWAP_WAIT1:
+                next_state = S_SWAP_WAIT2;
+                
+            S_SWAP_WAIT2:
                 next_state = S_LOOP_COND;
 
             S_SWAP_PIVOT_READ:
@@ -360,9 +400,18 @@ module SRTX2 (
                 next_state = S_LATCH_PIVOT_SWAP;
 
             S_LATCH_PIVOT_SWAP:
-                next_state = S_SWAP_PIVOT_WRITE;
+                next_state = S_SWAP_PIVOT_WRITE1;
 
-            S_SWAP_PIVOT_WRITE:
+            S_SWAP_PIVOT_WRITE1:
+                next_state = S_SWAP_PIVOT_WRITE2;
+
+            S_SWAP_PIVOT_WRITE2:
+                next_state = S_SWAP_PIVOT_WAIT1;
+
+            S_SWAP_PIVOT_WAIT1:
+                next_state = S_SWAP_PIVOT_WAIT2;
+                
+            S_SWAP_PIVOT_WAIT2:
                 next_state = S_PUSH;
 
             S_PUSH:
