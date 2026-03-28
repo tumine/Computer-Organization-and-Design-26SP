@@ -1,20 +1,37 @@
 module cpu (
-    input  wire        clk,
-    input  wire        rst_n,
-    
-    // 指令内存接口
-    output wire [31:0] pc,
-    input  wire [31:0] inst,
-    
-    // 数据内存接口
-    output wire [31:0] mem_addr,
-    output wire [31:0] mem_wdata,
-    output wire [3:0]  mem_we,      // 写使能掩码
-    input  wire [31:0] mem_rdata,
-    
-    // ebreak 停止信号
-    output wire        halt
+    input  wire                   clk,
+    input  wire                   rst,        // 高电平复位
+    input  wire                   global_en,  // PDU 状态更新使能信号
+
+    /* ------------------------------ Memory (inst) ----------------------------- */
+    output wire [31 : 0]            imem_raddr,
+    input  wire [31 : 0]            imem_rdata,
+
+    /* ------------------------------ Memory (data) ----------------------------- */
+    input  wire [31 : 0]            dmem_rdata,
+    output wire [ 3 : 0]            dmem_we,    // 保持4位子存储器掩码配置
+    output wire [31 : 0]            dmem_addr,
+    output wire [31 : 0]            dmem_wdata,
+
+    /* ---------------------------------- Debug --------------------------------- */
+    output wire [ 0 : 0]            commit,
+    output wire [31 : 0]            commit_pc,
+    output wire [31 : 0]            commit_instr,
+    output wire [ 0 : 0]            commit_halt,
+    output wire [ 0 : 0]            commit_reg_we,
+    output wire [ 4 : 0]            commit_reg_wa,
+    output wire [31 : 0]            commit_reg_wd,
+    output wire [ 0 : 0]            commit_dmem_we,
+    output wire [31 : 0]            commit_dmem_wa,
+    output wire [31 : 0]            commit_dmem_wd,
+
+    input  wire [ 4 : 0]            debug_reg_ra,
+    output wire [31 : 0]            debug_reg_rd
 );
+
+    wire [31:0] pc;
+    wire [31:0] inst = imem_rdata;
+    wire        halt;
 
     // --- 内部信号声明 ---
     wire [31:0] next_pc;            // 用于跳转指令重置 PC
@@ -46,12 +63,16 @@ module cpu (
 
     // --- PC 寄存器 ---
     reg [31:0] pc_reg;
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n)      pc_reg <= 32'h0000_0000;   // 此处的重置值在必要时需要按照具体实现确定
-        else if (!halt)  pc_reg <= next_pc; // 遇到 ebreak 则停止更新 PC
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            pc_reg <= 32'h0000_0000;
+        end else if (global_en && !halt) begin
+            pc_reg <= next_pc; 
+        end
     end
     assign pc = pc_reg;
-    assign next_pc = pc_sel ? alu_out : pc_plus_4; // 简化：JAL/Branch/JALR 目标统一由 ALU 计算或直接复用
+    assign imem_raddr = pc;
+    assign next_pc = pc_sel ? alu_out : pc_plus_4; 
 
     // --- 控制单元 ---
     decoder u_decoder (
@@ -74,13 +95,15 @@ module cpu (
     // --- 寄存器堆 ---
     regfile u_regfile (
         .clk        (clk),
-        .we         (rf_we),
+        .we         (rf_we && global_en && !halt), // 当 global_en 有效才允许写寄存器堆，避免PDU挂起时导致状态不断更新
         .rs1        (rs1),
         .rs2        (rs2),
         .rd         (rd),
         .wdata      (rf_wdata),
         .rdata1     (rf_rdata1),
-        .rdata2     (rf_rdata2)
+        .rdata2     (rf_rdata2),
+        .debug_ra   (debug_reg_ra),
+        .debug_rd   (debug_reg_rd)
     );
 
     // --- 立即数生成 ---
@@ -108,7 +131,7 @@ module cpu (
         .res        (cmp_res)
     );
 
-    // --- 访存控制 ---
+    // --- 访存控制与数据拼接 ---
     wire [31:0] mem_read_data_processed;
     data_mem_ctrl u_data_mem_ctrl (
         .addr       (alu_out),
@@ -116,17 +139,70 @@ module cpu (
         .mem_write  (mem_write),
         .mem_read   (mem_read),
         .wdata_in   (rf_rdata2),
-        .rdata_in   (mem_rdata),
-        .wdata_out  (mem_wdata),
-        .we_mask    (mem_we),
+        .rdata_in   (dmem_rdata),
+        .wdata_out  (dmem_wdata),
+        .we_mask    (dmem_we),
         .rdata_out  (mem_read_data_processed)
     );
 
-    assign mem_addr = {alu_out[31:2], 2'b00}; // 强制地址对齐，偏移量由 mem_ctrl 处理
+    assign dmem_addr = {alu_out[31:2], 2'b00}; 
 
     // --- 写回选择 ---
     assign rf_wdata = (wb_sel == 2'b00) ? alu_out :
                       (wb_sel == 2'b01) ? mem_read_data_processed :
                       (wb_sel == 2'b10) ? pc_plus_4 : 32'b0;
+
+    // --- Commit (Debug) 信号产生逻辑 ---
+    reg  [ 0 : 0]   commit_reg          ;
+    reg  [31 : 0]   commit_pc_reg       ;
+    reg  [31 : 0]   commit_instr_reg    ;
+    reg  [ 0 : 0]   commit_halt_reg     ;
+    reg  [ 0 : 0]   commit_reg_we_reg   ;
+    reg  [ 4 : 0]   commit_reg_wa_reg   ;
+    reg  [31 : 0]   commit_reg_wd_reg   ;
+    reg  [ 0 : 0]   commit_dmem_we_reg  ;
+    reg  [31 : 0]   commit_dmem_wa_reg  ;
+    reg  [31 : 0]   commit_dmem_wd_reg  ;
+
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            commit_reg          <= 1'b0;
+            commit_pc_reg       <= 32'b0;
+            commit_instr_reg    <= 32'b0;
+            commit_halt_reg     <= 1'b0;
+            commit_reg_we_reg   <= 1'b0;
+            commit_reg_wa_reg   <= 5'b0;
+            commit_reg_wd_reg   <= 32'b0;
+            commit_dmem_we_reg  <= 1'b0;
+            commit_dmem_wa_reg  <= 32'b0;
+            commit_dmem_wd_reg  <= 32'b0;
+        end
+        else if (global_en) begin
+            commit_reg          <= 1'b1;
+            commit_pc_reg       <= pc;
+            commit_instr_reg    <= inst;
+            commit_halt_reg     <= halt;
+            commit_reg_we_reg   <= rf_we && (rd != 5'b0); // 只有不是 r0 且 we 有效时才是真正的写
+            commit_reg_wa_reg   <= rd;
+            commit_reg_wd_reg   <= rf_wdata;
+            commit_dmem_we_reg  <= (|dmem_we); // |dmem_we 代表有内存写操作
+            commit_dmem_wa_reg  <= {alu_out[31:2], 2'b00}; // 对齐后的地址
+            commit_dmem_wd_reg  <= dmem_wdata;
+        end
+        else begin
+            commit_reg <= 1'b0;
+        end
+    end
+
+    assign commit           = commit_reg;
+    assign commit_pc        = commit_pc_reg;
+    assign commit_instr     = commit_instr_reg;
+    assign commit_halt      = commit_halt_reg;
+    assign commit_reg_we    = commit_reg_we_reg;
+    assign commit_reg_wa    = commit_reg_wa_reg;
+    assign commit_reg_wd    = commit_reg_wd_reg;
+    assign commit_dmem_we   = commit_dmem_we_reg;
+    assign commit_dmem_wa   = commit_dmem_wa_reg;
+    assign commit_dmem_wd   = commit_dmem_wd_reg;
 
 endmodule

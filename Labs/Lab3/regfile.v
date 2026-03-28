@@ -7,7 +7,11 @@ module regfile (
     input  wire [4:0]  rd,
     input  wire [31:0] wdata,
     output wire [31:0] rdata1,
-    output wire [31:0] rdata2
+    output wire [31:0] rdata2,
+    
+    // 调试端口
+    input  wire [4:0]  debug_ra,
+    output wire [31:0] debug_rd
 );
 
     reg [31:0] regs [0:31];
@@ -23,5 +27,8 @@ module regfile (
     // 读优先：不关心 rd 是否与 rs1/rs2 冲突
     assign rdata1 = (rs1 == 5'b0) ? 32'b0 : regs[rs1];
     assign rdata2 = (rs2 == 5'b0) ? 32'b0 : regs[rs2];
+    
+    // 调试读
+    assign debug_rd = (debug_ra == 5'b0) ? 32'b0 : regs[debug_ra];
 
 endmodule
