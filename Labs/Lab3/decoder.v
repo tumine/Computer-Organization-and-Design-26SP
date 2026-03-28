@@ -181,6 +181,13 @@ module decoder(
                     halt = 1; 
                 end
             end
+
+            default: begin
+                rf_we     = 0;
+                mem_write = 0;
+                mem_read  = 0;
+                halt      = 0;
+            end
         endcase
     end
 endmodule
