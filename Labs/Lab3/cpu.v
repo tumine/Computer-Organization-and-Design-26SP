@@ -1,4 +1,4 @@
-module cpu (
+module CPU (
     input  wire                   clk,
     input  wire                   rst,        // 高电平复位
     input  wire                   global_en,  // PDU 状态更新使能信号
@@ -65,7 +65,7 @@ module cpu (
     reg [31:0] pc_reg;
     always @(posedge clk or posedge rst) begin
         if (rst) begin
-            pc_reg <= 32'h0000_0000;
+            pc_reg <= 32'h0040_0000;
         end else if (global_en && !halt) begin
             pc_reg <= next_pc; 
         end

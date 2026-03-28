@@ -12,7 +12,7 @@ module top (
     wire [31:0] mem_rdata;
 
     // 例化 CPU
-    cpu u_cpu (
+    CPU u_cpu (
         .clk        (clk),
         .rst_n      (rst_n),
         .pc         (pc),
