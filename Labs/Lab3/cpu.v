@@ -1,3 +1,16 @@
+`ifndef INSTR_MEM_START
+  `define INSTR_MEM_START 32'H00400000
+`endif
+`ifndef INSTR_MEM_DEPTH
+  `define INSTR_MEM_DEPTH 16
+`endif
+`ifndef DATA_MEM_START
+  `define DATA_MEM_START 32'H10010000
+`endif
+`ifndef DATA_MEM_DEPTH
+  `define DATA_MEM_DEPTH 16
+`endif
+
 module CPU (
     input  wire                   clk,
     input  wire                   rst,        // 高电平复位
@@ -9,7 +22,7 @@ module CPU (
 
     /* ------------------------------ Memory (data) ----------------------------- */
     input  wire [31 : 0]            dmem_rdata,
-    output wire [ 3 : 0]            dmem_we,    // 保持4位子存储器掩码配置
+    output wire [ 3 : 0]            dmem_we,    // 保持 4 位子存储器掩码配置
     output wire [31 : 0]            dmem_addr,
     output wire [31 : 0]            dmem_wdata,
 
@@ -30,7 +43,8 @@ module CPU (
 );
 
     wire [31:0] pc;
-    wire [31:0] inst = imem_rdata;
+    wire        mem_out_bounds = (pc < `INSTR_MEM_START) || (pc >= `INSTR_MEM_START + (1 << (`INSTR_MEM_DEPTH + 2)));   // 指令是否越界
+    wire [31:0] inst = mem_out_bounds ? 32'b0 : imem_rdata;
     wire        halt;
 
     // --- 内部信号声明 ---
@@ -65,7 +79,7 @@ module CPU (
     reg [31:0] pc_reg;
     always @(posedge clk or posedge rst) begin
         if (rst) begin
-            pc_reg <= 32'h0040_0000;
+            pc_reg <= `INSTR_MEM_START;
         end else if (global_en && !halt) begin
             pc_reg <= next_pc; 
         end
@@ -95,7 +109,7 @@ module CPU (
     // --- 寄存器堆 ---
     regfile u_regfile (
         .clk        (clk),
-        .we         (rf_we && global_en && !halt), // 当 global_en 有效才允许写寄存器堆，避免PDU挂起时导致状态不断更新
+        .we         (rf_we && global_en && !halt), // 当 global_en 有效才允许写寄存器堆，避免 PDU 挂起时导致状态不断更新
         .rs1        (rs1),
         .rs2        (rs2),
         .rd         (rd),
@@ -164,7 +178,7 @@ module CPU (
     reg  [31 : 0]   commit_dmem_wa_reg  ;
     reg  [31 : 0]   commit_dmem_wd_reg  ;
 
-    always @(posedge clk or posedge rst) begin
+    always @(posedge clk) begin
         if (rst) begin
             commit_reg          <= 1'b0;
             commit_pc_reg       <= 32'b0;
@@ -182,15 +196,12 @@ module CPU (
             commit_pc_reg       <= pc;
             commit_instr_reg    <= inst;
             commit_halt_reg     <= halt;
-            commit_reg_we_reg   <= rf_we && (rd != 5'b0); // 只有不是 r0 且 we 有效时才是真正的写
+            commit_reg_we_reg   <= rf_we;
             commit_reg_wa_reg   <= rd;
-            commit_reg_wd_reg   <= rf_wdata;
+            commit_reg_wd_reg   <= (rd == 5'b0) ? 32'b0 : rf_wdata;
             commit_dmem_we_reg  <= (|dmem_we); // |dmem_we 代表有内存写操作
-            commit_dmem_wa_reg  <= {alu_out[31:2], 2'b00}; // 对齐后的地址
-            commit_dmem_wd_reg  <= dmem_wdata;
-        end
-        else begin
-            commit_reg <= 1'b0;
+            commit_dmem_wa_reg  <= (mem_read || mem_write) ? dmem_addr : `DATA_MEM_START; // 仅访存时有效，不访存时输出基址
+            commit_dmem_wd_reg  <= (|dmem_we) ? dmem_wdata : 32'b0;
         end
     end
 
