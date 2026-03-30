@@ -509,4 +509,5 @@ fail: # Fail label
     addi        x4, x4, 0xFFFFFFFF
     j           end
 end:
-    nop
+    ebreak
+    
