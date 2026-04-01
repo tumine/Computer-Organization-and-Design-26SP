@@ -109,7 +109,7 @@ module CPU (
     // --- 寄存器堆 ---
     regfile u_regfile (
         .clk        (clk),
-        .we         (rf_we && global_en && !halt), // 当 global_en 有效才允许写寄存器堆，避免PDU挂起时导致状态不断更新
+        .we         (rf_we && global_en && !halt), // 当 global_en 有效才允许写寄存器堆，避免 PDU 挂起时导致状态不断更新
         .rs1        (rs1),
         .rs2        (rs2),
         .rd         (rd),
@@ -127,6 +127,7 @@ module CPU (
     );
 
     // --- ALU ---
+    // 选择 ALU 两运算数的输入
     wire [31:0] alu_in_a = alu_src_a ? pc : rf_rdata1;
     wire [31:0] alu_in_b = alu_src_b ? imm : rf_rdata2;
     
@@ -173,9 +174,9 @@ module CPU (
     assign dmem_we = mem_write && (|ctrl_we_mask);
 
     // --- 写回选择 ---
-    assign rf_wdata = (wb_sel == 2'b00) ? alu_out :
-                      (wb_sel == 2'b01) ? mem_read_data_processed :
-                      (wb_sel == 2'b10) ? pc_plus_4 : 32'b0;
+    assign rf_wdata = (wb_sel == 2'b00) ? alu_out :                     // 选择 ALU 计算结果写入寄存器
+                      (wb_sel == 2'b01) ? mem_read_data_processed :     // 选择内存读取结果写入寄存器
+                      (wb_sel == 2'b10) ? pc_plus_4 : 32'b0;            // 选择 PC+4（作为返回地址）写入寄存器
 
     // --- Commit (Debug) 信号产生逻辑 ---
     reg  [ 0 : 0]   commit_reg          ;

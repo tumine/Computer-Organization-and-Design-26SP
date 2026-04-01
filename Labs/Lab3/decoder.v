@@ -143,8 +143,8 @@ module decoder(
             end
 
             JAL: begin          // JAL 指令属于 UJ 型指令
-                rf_we = 1;      // JAL 指令需要写入寄存器 (保存返回地址)
-                wb_sel = 2'b10; // 选通 PC + 4 (作为返回地址写入)
+                rf_we = 1;      // JAL 指令需要写入寄存器（保存返回地址）
+                wb_sel = 2'b10; // 选通 PC + 4（跳转后的返回地址）
                 alu_src_a = 1;  // 选通 PC
                 alu_src_b = 1;  // 选通立即数 imm
                 alu_op = ADD;   // 计算跳转目标地址 (PC + imm)
@@ -152,11 +152,11 @@ module decoder(
             end
 
             JALR: begin         // JALR 指令属于 I 型指令
-                rf_we = 1;      // JALR 指令需要写入寄存器 (保存返回地址)
-                wb_sel = 2'b10; // 选通 PC + 4 (作为返回地址写入)
+                rf_we = 1;      // JALR 指令需要写入寄存器（保存返回地址）
+                wb_sel = 2'b10; // 选通 PC + 4（跳转后的返回地址）
                 alu_src_a = 0;  // 选通寄存器读出 rs1
                 alu_src_b = 1;  // 选通立即数 imm
-                alu_op = ADD;   // 计算跳转目标地址 (rs1 + imm)
+                alu_op = ADD;   // 计算跳转目标地址 rs1 + imm
                 pc_sel = 1;     // 无条件跳转
             end
 
@@ -164,7 +164,7 @@ module decoder(
                 rf_we = 1;      // LUI 指令需要写入寄存器
                 wb_sel = 2'b00; // 选通 ALU 计算结果
                 alu_src_b = 1;  // 选通立即数 imm
-                alu_op = B_OUT; // 直接输出 B (即立即数)
+                alu_op = B_OUT; // 直接输出 B（通过 alu_src_b 信号选通立即数）
             end
 
             AUIPC: begin        // AUIPC 指令属于 U 型指令

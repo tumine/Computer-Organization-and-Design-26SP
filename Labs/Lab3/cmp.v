@@ -1,3 +1,4 @@
+// 条件跳转的分支判断
 module cmp (
     input  wire [31:0] a,
     input  wire [31:0] b,
