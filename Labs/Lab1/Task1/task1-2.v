@@ -16,17 +16,11 @@ initial begin
     end
 end
 
-// 读寄存器；写优先，同步
-always @(posedge clk) begin
-    if (we && ra0 != 0 && ra0 == wa) // 写优先：如果读写同一地址且非 0 号寄存器
-        rd0 <= wd;
-    else
-        rd0 <= r[ra0];
+// 读寄存器；写优先，异步
+always @(*) begin
+    rd0 = r[ra0];
     
-    if (we && ra1 != 0 && ra1 == wa)
-        rd1 <= wd;
-    else
-        rd1 <= r[ra1];
+    rd1 = r[ra1];
 end
 
 // 写寄存器（同步）
