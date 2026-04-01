@@ -222,17 +222,11 @@ initial begin
     end
 end
 
-// 读寄存器；写优先，同步
-always @(posedge clk) begin
-    if (we && ra0 != 0 && ra0 == wa) // 写优先：如果读写同一地址且非 0 号寄存器
-        rd0 <= wd;
-    else
-        rd0 <= r[ra0];
+// 读寄存器；写优先，异步
+always @(*) begin
+    rd0 = r[ra0];
     
-    if (we && ra1 != 0 && ra1 == wa)
-        rd1 <= wd;
-    else
-        rd1 <= r[ra1];
+    rd1 = r[ra1];
 end
 
 // 写寄存器（同步）
@@ -241,9 +235,9 @@ always  @(posedge clk)
         r[wa] <= wd;
 endmodule
 ```
-寄存器实现写优先的思路：在读操作时，如果读地址与写地址相同且写使能有效，则优先返回写数据而不是寄存器中的旧数据。
+寄存器实现异步读的思路：在读操作时，直接使用组合逻辑赋值 `rd0 = r[ra0]` 和 `rd1 = r[ra1]`。这种方式下，读操作不受时钟信号边沿的控制，地址信号发生变化后，读取的内容能够立刻在同一周期内反映在输出端口上。与此同时，寄存器堆的写操作同步执行，保证了寄存器状态更新的稳定性。
 
-为了让寄存器堆的输出数据流更规整，采用同步读取方式实现寄存器堆，只在时钟上升沿读取寄存器堆中的数据并更新到输出端口。如果输入的地址信息维持没有达到一个时钟周期，则会被寄存器堆忽略。
+值得特别注意的是：代码中的读出端口 `rd0` 和 `rd1` 必须被声明为 `reg` 类型并置于 `always @(*)` 块中赋值，而不能被声明为 `wire` 类型并使用 `assign` 进行连续赋值。如果使用 `wire` 类型直接赋连续值，在同一个时钟上升沿对同一地址进行同时读写（读写冲突）时，内部数组的同步更新与输出的连续读取会在事件触发机制下**产生竞争-冒险**，导致读取端口捕捉到电平更替的过渡态，从而在仿真中出现 `XX`（未知值）的不稳定状态；而将其声明为 `reg` 并置放在 `always @(*)` 块内，则能够依靠仿真器的过程赋值机制有效隔离这种竞争冲突，避免不稳定的 `XX` 状态的出现。
 
 ## Task 2
 本任务使用的 testbench 文件如下：
@@ -320,68 +314,8 @@ Distributed RAM 的读取基于纯粹的组合逻辑，因此可以即时响应�
 
 ## Task 3
 ### Task 3-1
+冒泡排序的核心代码如下：
 ```Verilog
-`timescale 1ns / 1ps
-
-// ========================================================
-// 冒泡排序主模块 SRT
-// ========================================================
-module SRT_ipb (
-    input  wire        clk,
-    input  wire        rstn,
-    input  wire        mode,      // 0-降序，1-升序
-    input  wire        start,     // 启动信号
-    input  wire [9:0]  addr,      // 查看地址（基于开关输入）
-
-    output reg         done,      // 排序结束标志
-    output wire [31:0] data,      // addr 对应地址上的数据
-    output reg  [31:0] count      // 排序所需时钟周期数
-);
-
-    // --------------------------------------------------------
-    // BRAM 接口信号定义
-    // --------------------------------------------------------
-    reg  [9:0]  bram_addra, bram_addrb;
-    reg  [31:0] bram_dina,  bram_dinb;
-    reg         bram_wea,   bram_web;
-    wire [31:0] bram_douta, bram_doutb;
-
-    // 真双端口 BRAM（ENA Pin 始终启用）
-    blk_mem_gen_0 dual_blk_mem_wfirst (
-        .clka(clk), 
-        .wea(bram_wea), 
-        .addra(bram_addra), 
-        .dina(bram_dina), 
-        .douta(bram_douta),
-
-        .clkb(clk),
-        .web(bram_web),
-        .addrb(bram_addrb),
-        .dinb(bram_dinb), 
-        .doutb(bram_doutb)
-    );
-
-    // 查看地址功能映射：空闲或完成时，利用端口 A 读取外部开关指定的地址
-    assign data = bram_douta;
-
-    // --------------------------------------------------------
-    // 状态机定义
-    // --------------------------------------------------------
-    localparam S_IDLE   = 3'd0; // 空闲/等待
-    localparam S_READ   = 3'd1; // 发送读地址
-    localparam S_RWAIT  = 3'd2; // 等待 BRAM 同步读取延迟
-    localparam S_CMP    = 3'd3; // 比较数据，决定是否交换
-    localparam S_WRITE1 = 3'd4; // 向 A 端口写入交换后的数据
-    localparam S_WRITE2 = 3'd5; // 向 B 端口写入交换后的数据，同时兼做等待 a 端口写入
-    localparam S_WWAIT  = 3'd6; // 等待 BRAM 写入，提高电路稳定性
-    localparam S_DONE   = 3'd7; // 排序完成
-
-    reg [2:0] current_state, next_state;
-
-    reg [9:0] i;       // 外循环: 0 到 1022
-    reg [9:0] j;       // 内循环: 1023 到 i + 1
-    reg [31:0] temp;  // 交换写入过程中暂存 dout_a 使用
-
     // --------------------------------------------------------
     // 主控时序逻辑
     // --------------------------------------------------------
@@ -577,136 +511,8 @@ LUT、FF 等资源的使用情况如下图：
 ## Task X
 ### Task X-2
 #### 代码解释
+快速排序的核心代码如下：
 ```Verilog
-`timescale 1ns / 1ps
-
-// ========================================================
-// 真双端口 BRAM（读优先，双读单写）
-// ========================================================
-module dual_port_bram #(
-    parameter DATA_WIDTH = 32,
-    parameter ADDR_WIDTH = 10
-)(
-    input  wire                  clk,
-    // 端口 A
-    input  wire                  wea,
-    input  wire [ADDR_WIDTH-1:0] addra,
-    input  wire [DATA_WIDTH-1:0] dina,
-    output reg  [DATA_WIDTH-1:0] douta,
-    // 端口 B
-    input  wire                  web,
-    input  wire [ADDR_WIDTH-1:0] addrb,
-    input  wire [DATA_WIDTH-1:0] dinb,
-    output reg  [DATA_WIDTH-1:0] doutb
-);
-
-    // 定义存储器，深度 1024
-    reg [DATA_WIDTH-1:0] ram [0:(1<<ADDR_WIDTH)-1];
-
-    initial begin
-        // 使用 .txt 文件进行初始化
-        $readmemh("E:/Computer-Organization-and-Design-26SP/Labs/Lab1/Task3/attachments/data.txt", ram);
-    end
-
-    // 同步读写，同一周期只能向一个端口写入（A 端口优先）
-    always @(posedge clk) begin
-        if (wea)
-            ram[addra] <= dina;
-        else if (web)
-            ram[addrb] <= dinb;
-            
-        douta <= ram[addra];
-        doutb <= ram[addrb];
-    end
-endmodule
-
-
-// ========================================================
-// 快速排序主模块 SRT（固定 pivot 为区间最后一个元素）
-// ========================================================
-module SRTX2 (
-    input  wire        clk,
-    input  wire        rstn,
-    input  wire        mode,      // 0-降序，1-升序
-    input  wire        start,     // 启动信号
-    input  wire [9:0]  addr,      // 查看地址（基于开关输入）
-
-    output reg         done,      // 排序结束标志
-    output wire [31:0] data,      // addr 对应地址上的数据
-    output reg  [31:0] count      // 排序所需时钟周期数
-);
-
-    // BRAM 接口
-    reg  [9:0]  bram_addra, bram_addrb;
-    reg  [31:0] bram_dina,  bram_dinb;
-    reg         bram_wea,   bram_web;
-    wire [31:0] bram_douta, bram_doutb;
-
-    dual_port_bram #(
-        .DATA_WIDTH(32),
-        .ADDR_WIDTH(10)
-    ) bram (
-        .clk    (clk),
-        .wea    (bram_wea),
-        .addra  (bram_addra),
-        .dina   (bram_dina),
-        .douta  (bram_douta),
-
-        .web    (bram_web),
-        .addrb  (bram_addrb),
-        .dinb   (bram_dinb),
-        .doutb  (bram_doutb)
-    );
-
-    assign data = bram_douta;
-
-    // --------------------------------------------------------
-    // 硬件栈存储 {low, high} 区间索引对
-    // 使用 11 位有符号数防止 i = low - 1 时出现下溢
-    // --------------------------------------------------------
-    reg [21:0] stack [0:1023]; 
-    reg [10:0] sp; // 栈顶指针
-
-    // --------------------------------------------------------
-    // 状态机定义
-    // --------------------------------------------------------
-    localparam S_IDLE                   = 5'd0;   // 空闲/等待
-    localparam S_POP                    = 5'd1;   // 出栈：从栈中取出子数组 [low, high]；若栈空则排序完成
-    localparam S_READ_PIVOT             = 5'd2;   // 读取基准：发送地址 high 到 BRAM，读取 bram[high] 作为基准（pivot）
-    localparam S_WAIT_PIVOT             = 5'd3;   // 等待 BRAM 同步读取延迟
-    localparam S_LATCH_PIVOT            = 5'd4;   // 锁存基准值：pivot_val = bram[high]，初始化 i = low - 1, j = low
-    localparam S_LOOP_COND              = 5'd5;   // 循环条件：判断 j < high，决定继续分区或结束循环
-    localparam S_WAIT_J                 = 5'd6;   // 等待 bram[j] 读取完成
-    localparam S_LATCH_J                = 5'd7;   // 锁存 bram[j] 到 val_j
-    localparam S_CMP                    = 5'd8;   // 比较：判断 val_j 与 pivot_val 大小，决定是否交换
-    localparam S_WAIT_I                 = 5'd9;   // 等待 bram[i] 读取完成
-    localparam S_LATCH_I                = 5'd10;  // 锁存 bram[i] 到 val_i
-    localparam S_SWAP1                  = 5'd11;  // 交换写入端口 A：写入 bram[i] = val_j
-    localparam S_SWAP2                  = 5'd12;  // 交换写入端口 B：写入 bram[j] = val_i（兼关闭 A 端口写入）
-    localparam S_SWAP_WAIT1             = 5'd13;  // 交换写入：关闭 B 端口写入（兼等待 A 端口写入）
-    localparam S_SWAP_WAIT2             = 5'd14;  // 交换写入：等待 B 端口写入
-    localparam S_SWAP_PIVOT_READ        = 5'd15;  // 读取 i+1 处的值，准备与 pivot 进行交换
-    localparam S_WAIT_PIVOT_SWAP        = 5'd16;  // 等待 bram[i+1] 读取完成
-    localparam S_LATCH_PIVOT_SWAP       = 5'd17;  // 锁存 bram[i+1] 到 val_i1
-    localparam S_SWAP_PIVOT_WRITE1      = 5'd18;  // 写入 A 端口：将 pivot 写入 bram[i+1]
-    localparam S_SWAP_PIVOT_WRITE2      = 5'd19;  // 写入 B 端口：将 val_i1 写入 bram[high]（兼关闭 A 端口写入）
-    localparam S_SWAP_PIVOT_WAIT1       = 5'd20;  // pivot 归位：关闭 B 端口写入（兼等待 A 端口写入）
-    localparam S_SWAP_PIVOT_WAIT2       = 5'd21;  // pivot 归位：等待 B 端口写入
-    localparam S_PUSH                   = 5'd22;  // 将分区产生的子数组 [low, pivot-1] 和 [pivot+1, high] 压栈
-    localparam S_DONE                   = 5'd23;  // 排序完成
-
-    reg [4:0] current_state, next_state;
-    
-    reg signed [10:0] low, high;           // 当前子数组的起始/结束索引
-    reg signed [10:0] i;                   // 区间内基准值左侧（根据 mode 决定更大/更小）元素的索引上界
-    reg signed [10:0] j;                   // 遍历当前区间
-    reg signed [10:0] pivot_idx;           // 基准值最终所在的索引位置
-    
-    reg [31:0] pivot_val;                  // 基准值，选取 bram[high] 作为基准
-    reg [31:0] val_j;                      // bram[j] 的值，当前扫描到的元素
-    reg [31:0] val_i;                      // 一轮遍历中执行交换操作时暂存 bram[i] 的值
-    reg [31:0] val_i1;                     // 在基准归位时暂存 bram[i+1] 的值
-
     // --------------------------------------------------------
     // 主控时序逻辑
     // --------------------------------------------------------
