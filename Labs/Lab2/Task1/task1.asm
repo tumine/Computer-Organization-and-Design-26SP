@@ -7,6 +7,9 @@ main:
     beqz a0, end_fib        # 若 a0 = 0，直接返回结果为 0 = a0
 
     li t1, 1                # F(1) = 1，同时用于 n = 1 的条件判定
+    la s0, fib_array        # s0 -> 存储基地址（每次存储后加 4）
+    sw t1, 0(s0)            # 存储 F(1)
+    addi s0, s0, 4          # 指向下一个存储位置
     beq a0, t1, end_fib     # 若 a0 = 1，直接返回结果为 1 = a1
 
     blt a0, zero, err_proc  # 若 a0 < 0，进入错误处理程序
@@ -25,6 +28,8 @@ loop:
     mv t1, t3               # t1 = t3
 
     addi t2, t2, 1
+    sw t1, 0(s0)            # 存储当前 F(t2)
+    addi s0, s0, 4          # 指向下一个存储位置
     j loop
 
 err_proc:
@@ -37,3 +42,8 @@ end_loop:
 end_fib:
     li a7, 10               # 结束求解程序
     ecall
+
+.data
+.align 2
+fib_array:                  # 预留内存区域以便导出 COE 文件（1024 bytes = 256 words）
+    .space 1024
