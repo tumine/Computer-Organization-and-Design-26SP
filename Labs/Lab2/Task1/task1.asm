@@ -45,5 +45,5 @@ end_fib:
 
 .data
 .align 2
-fib_array:                 # 预留内存区域以便导出 COE 文件（1024 bytes = 256 words）
+fib_array:                  # 预留内存区域以便导出 COE 文件（1024 bytes = 256 words）
     .space 1024
