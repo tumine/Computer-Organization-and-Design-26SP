@@ -22,7 +22,7 @@ module CPU (
 
     /* ------------------------------ Memory (data) ----------------------------- */
     input  wire [31 : 0]            dmem_rdata,
-    output wire [ 3 : 0]            dmem_we,    // 保持 4 位子存储器掩码配置
+    output wire                     dmem_we,    // single-bit write enable (RMW handled in CPU)
     output wire [31 : 0]            dmem_addr,
     output wire [31 : 0]            dmem_wdata,
 
@@ -43,7 +43,7 @@ module CPU (
 );
 
     wire [31:0] pc;
-    wire        mem_out_bounds = (pc < `INSTR_MEM_START) || (pc >= `INSTR_MEM_START + (1 << (`INSTR_MEM_DEPTH + 2)));   // 指令是否越界
+    wire        mem_out_bounds = (pc < `INSTR_MEM_START) || (pc >= `INSTR_MEM_START + (1 << (`INSTR_MEM_DEPTH + 2)));
     wire [31:0] inst = mem_out_bounds ? 32'b0 : imem_rdata;
     wire        halt;
 
@@ -86,7 +86,7 @@ module CPU (
     end
     assign pc = pc_reg;
     assign imem_raddr = pc;
-    assign next_pc = pc_sel ? alu_out : pc_plus_4; 
+    assign next_pc = pc_sel ? alu_out : pc_plus_4;  // 根据当前指令选择 PC 顺序增加还是进行指令跳转
 
     // --- 控制单元 ---
     decoder u_decoder (
@@ -109,7 +109,7 @@ module CPU (
     // --- 寄存器堆 ---
     regfile u_regfile (
         .clk        (clk),
-        .we         (rf_we && global_en && !halt), // 当 global_en 有效才允许写寄存器堆，避免 PDU 挂起时导致状态不断更新
+        .we         (rf_we && global_en && !halt), // 当 global_en 有效才允许写寄存器堆，避免PDU挂起时导致状态不断更新
         .rs1        (rs1),
         .rs2        (rs2),
         .rd         (rd),
@@ -146,7 +146,9 @@ module CPU (
     );
 
     // --- 访存控制与数据拼接 ---
-    wire [31:0] mem_read_data_processed;
+    wire [31:0] mem_read_data_processed;    // 按指令读取的规则，经符号扩展/零扩展得到的完整 32 位内存读取数据
+    wire [31:0] ctrl_wdata;                 // 按指令写入的规则对待写入数据扩展到 32 位后得到的数据（如 8-8-8-8 或 16-16）
+    wire [ 3:0] ctrl_we_mask;               // 写入掩码，选择写入第几个字节
     data_mem_ctrl u_data_mem_ctrl (
         .addr       (alu_out),
         .funct3     (funct3),
@@ -154,12 +156,21 @@ module CPU (
         .mem_read   (mem_read),
         .wdata_in   (rf_rdata2),
         .rdata_in   (dmem_rdata),
-        .wdata_out  (dmem_wdata),
-        .we_mask    (dmem_we),
+        .wdata_out  (ctrl_wdata),
+        .we_mask    (ctrl_we_mask),
         .rdata_out  (mem_read_data_processed)
     );
 
-    assign dmem_addr = {alu_out[31:2], 2'b00}; 
+    assign dmem_addr = {alu_out[31:2], 2'b00};  // 数据内存字对齐访问，低 2 位强制清零
+
+    // 将 4bit 字节掩码展开成 32bit 掩码
+    wire [31:0] ctrl_byte_mask32 = { {8{ctrl_we_mask[3]}}, {8{ctrl_we_mask[2]}}, {8{ctrl_we_mask[1]}}, {8{ctrl_we_mask[0]}} };
+    // 根据内存中原值和指令，拼接出将要写入内存中的新值
+    // 1) 旧值中保留不写的字节；2) 新值中取需要写的字节；3) 按位或得到完整 32bit 写数据。
+    wire [31:0] merged_wdata = (dmem_rdata & ~ctrl_byte_mask32) | (ctrl_wdata & ctrl_byte_mask32);
+    assign dmem_wdata = merged_wdata;
+    // 执行 STORE 指令且至少有 1 个字节写入有效时置写使能信号
+    assign dmem_we = mem_write && (|ctrl_we_mask);
 
     // --- 写回选择 ---
     assign rf_wdata = (wb_sel == 2'b00) ? alu_out :
@@ -199,9 +210,9 @@ module CPU (
             commit_reg_we_reg   <= rf_we;
             commit_reg_wa_reg   <= rd;
             commit_reg_wd_reg   <= (rd == 5'b0) ? 32'b0 : rf_wdata;
-            commit_dmem_we_reg  <= (|dmem_we); // |dmem_we 代表有内存写操作
-            commit_dmem_wa_reg  <= (mem_read || mem_write) ? dmem_addr : `DATA_MEM_START; // 仅访存时有效，不访存时输出基址
-            commit_dmem_wd_reg  <= (|dmem_we) ? dmem_wdata : 32'b0;
+            commit_dmem_we_reg  <= (mem_write && (|ctrl_we_mask)); // 表示有有效的内存写操作
+            commit_dmem_wa_reg  <= (mem_read || mem_write) ? dmem_addr : `DATA_MEM_START; // 仅访存时有效，不访存时输出基址以抵消 top.v 的减法
+            commit_dmem_wd_reg  <= (mem_write && (|ctrl_we_mask)) ? dmem_wdata : 32'b0;
         end
     end
 
