@@ -3,6 +3,7 @@ module decoder(
     input  wire [2:0] funct3,
     input  wire [6:0] funct7,
     input  wire       cmp_res,
+    input  wire       inst20,
 
     // 译码器输出控制信号
     output reg        pc_sel,       // PCMUX
@@ -176,7 +177,7 @@ module decoder(
             end
             
             SYSTEM: begin
-                if (funct3 == 3'b000 && funct7 == 7'b0000000) begin
+                if (funct3 == 3'b000 && inst20 == 1'b1) begin
                     // 遇到 ebreak (000000000001_00000_000_00000_1110011) 停机
                     halt = 1; 
                 end

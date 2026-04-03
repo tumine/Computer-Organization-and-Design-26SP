@@ -80,7 +80,8 @@ module CPU (
     always @(posedge clk or posedge rst) begin
         if (rst) begin
             pc_reg <= `INSTR_MEM_START;
-        end else if (global_en && !halt) begin
+        end
+        else if (global_en && !halt) begin
             pc_reg <= next_pc; 
         end
     end
@@ -94,6 +95,8 @@ module CPU (
         .funct3     (funct3),
         .funct7     (funct7),
         .cmp_res    (cmp_res),
+        .inst20     (inst[20]),
+
         .pc_sel     (pc_sel),
         .rf_we      (rf_we),
         .wb_sel     (wb_sel),
@@ -171,7 +174,7 @@ module CPU (
     wire [31:0] merged_wdata = (dmem_rdata & ~ctrl_byte_mask32) | (ctrl_wdata & ctrl_byte_mask32);
     assign dmem_wdata = merged_wdata;
     // 执行 STORE 指令且至少有 1 个字节写入有效时置写使能信号
-    assign dmem_we = mem_write && (|ctrl_we_mask);
+    assign dmem_we = mem_write && (|ctrl_we_mask) && global_en;
 
     // --- 写回选择 ---
     assign rf_wdata = (wb_sel == 2'b00) ? alu_out :                     // 选择 ALU 计算结果写入寄存器
@@ -203,7 +206,7 @@ module CPU (
             commit_dmem_wa_reg  <= 32'b0;
             commit_dmem_wd_reg  <= 32'b0;
         end
-        else if (global_en) begin
+        else if (global_en && !halt) begin
             commit_reg          <= 1'b1;
             commit_pc_reg       <= pc;
             commit_instr_reg    <= inst;
@@ -214,6 +217,9 @@ module CPU (
             commit_dmem_we_reg  <= (mem_write && (|ctrl_we_mask)); // 表示有有效的内存写操作
             commit_dmem_wa_reg  <= (mem_read || mem_write) ? dmem_addr : `DATA_MEM_START; // 仅访存时有效，不访存时输出基址以抵消 top.v 的减法
             commit_dmem_wd_reg  <= (mem_write && (|ctrl_we_mask)) ? dmem_wdata : 32'b0;
+        end
+        else begin
+            commit_reg <= 1'b0;
         end
     end
 
