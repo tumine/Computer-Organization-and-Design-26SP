@@ -223,7 +223,7 @@ module CPU (
             commit_dmem_wa_reg  <= 32'b0;
             commit_dmem_wd_reg  <= 32'b0;
         end
-        else if (global_en && !halt) begin
+        else if (global_en) begin
             commit_reg          <= 1'b1;
             commit_pc_reg       <= pc;
             commit_instr_reg    <= inst;
