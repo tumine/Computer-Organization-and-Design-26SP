@@ -184,7 +184,7 @@ module TOP (
     // Debug
         .commit                 (cpu_commit_en          )   ,
         .commit_pc              (cpu_commit_pc          )   ,
-        .commit_instr           (cpu_commit_insr        )   ,
+        .commit_instr           (cpu_commit_instr       )   ,
         .commit_halt            (cpu_commit_halt        )   ,
         .commit_reg_we          (                       )   ,
         .commit_reg_wa          (                       )   ,

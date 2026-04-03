@@ -12,84 +12,92 @@
 `endif
 
 module CPU (
-    input  wire                   clk,
-    input  wire                   rst,        // 高电平复位
-    input  wire                   global_en,  // PDU 状态更新使能信号
+    input                   [ 0 : 0]            clk,
+    input                   [ 0 : 0]            rst,
+    input                   [ 0 : 0]            global_en,
 
-    /* ------------------------------ Memory (inst) ----------------------------- */
-    output wire [31 : 0]            imem_raddr,
-    input  wire [31 : 0]            imem_rdata,
+/* ------------------------------ Memory (inst) ----------------------------- */
+    output                  [31 : 0]            imem_raddr,
+    input                   [31 : 0]            imem_rdata,
 
-    /* ------------------------------ Memory (data) ----------------------------- */
-    input  wire [31 : 0]            dmem_rdata,
-    output wire                     dmem_we,    // single-bit write enable (RMW handled in CPU)
-    output wire [31 : 0]            dmem_addr,
-    output wire [31 : 0]            dmem_wdata,
+/* ------------------------------ Memory (data) ----------------------------- */
+    input                   [31 : 0]            dmem_rdata,
+    output                  [ 0 : 0]            dmem_we,
+    output                  [31 : 0]            dmem_addr,
+    output                  [31 : 0]            dmem_wdata,
 
-    /* ---------------------------------- Debug --------------------------------- */
-    output wire [ 0 : 0]            commit,
-    output wire [31 : 0]            commit_pc,
-    output wire [31 : 0]            commit_instr,
-    output wire [ 0 : 0]            commit_halt,
-    output wire [ 0 : 0]            commit_reg_we,
-    output wire [ 4 : 0]            commit_reg_wa,
-    output wire [31 : 0]            commit_reg_wd,
-    output wire [ 0 : 0]            commit_dmem_we,
-    output wire [31 : 0]            commit_dmem_wa,
-    output wire [31 : 0]            commit_dmem_wd,
+/* ---------------------------------- Debug --------------------------------- */
+    output                  [ 0 : 0]            commit,
+    output                  [31 : 0]            commit_pc,
+    output                  [31 : 0]            commit_instr,
+    output                  [ 0 : 0]            commit_halt,
+    output                  [ 0 : 0]            commit_reg_we,
+    output                  [ 4 : 0]            commit_reg_wa,
+    output                  [31 : 0]            commit_reg_wd,
+    output                  [ 0 : 0]            commit_dmem_we,
+    output                  [31 : 0]            commit_dmem_wa,
+    output                  [31 : 0]            commit_dmem_wd,
 
-    input  wire [ 4 : 0]            debug_reg_ra,
-    output wire [31 : 0]            debug_reg_rd
+    input                   [ 4 : 0]            debug_reg_ra,
+    output                  [31 : 0]            debug_reg_rd
 );
 
+    // ========================= PC 与指令提取 =========================
     wire [31:0] pc;
-    wire        mem_out_bounds = (pc < `INSTR_MEM_START) || (pc >= `INSTR_MEM_START + (1 << (`INSTR_MEM_DEPTH + 2)));
+    // 越界保护：PC 超出指令存储器范围时将指令置为 NOP
+    wire        mem_out_bounds = (pc < `INSTR_MEM_START)
+                              || (pc >= `INSTR_MEM_START + (1 << (`INSTR_MEM_DEPTH + 2)));
     wire [31:0] inst = mem_out_bounds ? 32'b0 : imem_rdata;
     wire        halt;
 
-    // --- 内部信号声明 ---
-    wire [31:0] next_pc;            // 用于跳转指令重置 PC
-    wire [31:0] pc_plus_4 = pc + 4; // PC 缺省跳转到下一条指令地址
-    
-    // 具有固定域的各个参数，但不一定适用于当前指令
-    wire [4:0]  rs1 = inst[19:15];
-    wire [4:0]  rs2 = inst[24:20];
-    wire [4:0]  rd  = inst[11:7];
-    wire [2:0]  funct3 = inst[14:12];
-    wire [6:0]  funct7 = inst[31:25];
-    wire [6:0]  opcode = inst[6:0];
+    // 内部信号
+    wire [31:0] next_pc;
+    wire [31:0] pc_plus_4 = pc + 4;
+
+    // 指令字段提取
+    wire [4:0]  rs1     = inst[19:15];
+    wire [4:0]  rs2     = inst[24:20];
+    wire [4:0]  rd      = inst[11:7];
+    wire [2:0]  funct3  = inst[14:12];
+    wire [6:0]  funct7  = inst[31:25];
+    wire [6:0]  opcode  = inst[6:0];
 
     wire [31:0] imm;
     wire [31:0] rf_rdata1, rf_rdata2, rf_wdata;
     wire [31:0] alu_out;
     wire        cmp_res;
-    
+
     // 控制信号
-    wire        pc_sel;      // 0: PC+4, 1: ALU/Branch target
+    wire        pc_sel;
     wire        rf_we;
-    wire [1:0]  wb_sel;      // 00: ALU, 01: Mem, 10: PC+4
-    wire        alu_src_a;   // 0: rs1, 1: PC
-    wire        alu_src_b;   // 0: rs2, 1: imm
-    wire [4:0]  alu_op;      // ALU 操作控制
-    wire [2:0]  cmp_op;      // 比较器操作控制
+    wire [1:0]  wb_sel;
+    wire        alu_src_a;
+    wire        alu_src_b;
+    wire [4:0]  alu_op;
+    wire [2:0]  cmp_op;
     wire        mem_write;
     wire        mem_read;
+    wire        is_jalr;
 
-    // --- PC 寄存器 ---
+    // ========================= PC 寄存器 =========================
     reg [31:0] pc_reg;
-    always @(posedge clk or posedge rst) begin
+    always @(posedge clk) begin
         if (rst) begin
             pc_reg <= `INSTR_MEM_START;
         end
         else if (global_en && !halt) begin
-            pc_reg <= next_pc; 
+            pc_reg <= next_pc;
         end
     end
     assign pc = pc_reg;
     assign imem_raddr = pc;
-    assign next_pc = pc_sel ? alu_out : pc_plus_4;  // 根据当前指令选择 PC 顺序增加还是进行指令跳转
 
-    // --- 控制单元 ---
+    // JALR 跳转目标需要将 LSB 清零：target = (rs1 + imm) & ~1
+    // 其他跳转指令直接使用 ALU 输出
+    assign next_pc = pc_sel ? (is_jalr ? {alu_out[31:1], 1'b0} : alu_out)
+                            : pc_plus_4;
+
+    // ========================= 控制单元（译码器） =========================
     decoder u_decoder (
         .opcode     (opcode),
         .funct3     (funct3),
@@ -106,13 +114,14 @@ module CPU (
         .cmp_op     (cmp_op),
         .mem_write  (mem_write),
         .mem_read   (mem_read),
+        .is_jalr    (is_jalr),
         .halt       (halt)
     );
 
-    // --- 寄存器堆 ---
+    // ========================= 寄存器堆 =========================
     regfile u_regfile (
         .clk        (clk),
-        .we         (rf_we && global_en && !halt), // 当 global_en 有效才允许写寄存器堆，避免 PDU 挂起时导致状态不断更新
+        .we         (rf_we && global_en && !halt),
         .rs1        (rs1),
         .rs2        (rs2),
         .rd         (rd),
@@ -123,17 +132,16 @@ module CPU (
         .debug_rd   (debug_reg_rd)
     );
 
-    // --- 立即数生成 ---
+    // ========================= 立即数生成 =========================
     imm_gen u_imm_gen (
         .inst       (inst),
         .imm        (imm)
     );
 
-    // --- ALU ---
-    // 选择 ALU 两运算数的输入
+    // ========================= ALU =========================
     wire [31:0] alu_in_a = alu_src_a ? pc : rf_rdata1;
     wire [31:0] alu_in_b = alu_src_b ? imm : rf_rdata2;
-    
+
     alu u_alu (
         .a          (alu_in_a),
         .b          (alu_in_b),
@@ -141,7 +149,7 @@ module CPU (
         .out        (alu_out)
     );
 
-    // --- 比较器 ---
+    // ========================= 分支比较器 =========================
     cmp u_cmp (
         .a          (rf_rdata1),
         .b          (rf_rdata2),
@@ -149,10 +157,11 @@ module CPU (
         .res        (cmp_res)
     );
 
-    // --- 访存控制与数据拼接 ---
-    wire [31:0] mem_read_data_processed;    // 按指令读取的规则，经符号扩展/零扩展得到的完整 32 位内存读取数据
-    wire [31:0] ctrl_wdata;                 // 按指令写入的规则对待写入数据扩展到 32 位后得到的数据（如 8-8-8-8 或 16-16）
-    wire [ 3:0] ctrl_we_mask;               // 写入掩码，选择写入第几个字节
+    // ========================= 数据存储器访问控制 =========================
+    wire [31:0] mem_read_data_processed;
+    wire [31:0] ctrl_wdata;
+    wire [ 3:0] ctrl_we_mask;
+
     data_mem_ctrl u_data_mem_ctrl (
         .addr       (alu_out),
         .funct3     (funct3),
@@ -165,23 +174,31 @@ module CPU (
         .rdata_out  (mem_read_data_processed)
     );
 
-    assign dmem_addr = {alu_out[31:2], 2'b00};  // 数据内存字对齐访问，低 2 位强制清零
+    // 数据存储器地址字对齐（低 2 位清零）
+    assign dmem_addr = {alu_out[31:2], 2'b00};
 
-    // 将 4bit 字节掩码展开成 32bit 掩码
-    wire [31:0] ctrl_byte_mask32 = { {8{ctrl_we_mask[3]}}, {8{ctrl_we_mask[2]}}, {8{ctrl_we_mask[1]}}, {8{ctrl_we_mask[0]}} };
-    // 根据内存中原值和指令，拼接出将要写入内存中的新值
-    // 1) 旧值中保留不写的字节；2) 新值中取需要写的字节；3) 按位或得到完整 32bit 写数据。
-    wire [31:0] merged_wdata = (dmem_rdata & ~ctrl_byte_mask32) | (ctrl_wdata & ctrl_byte_mask32);
+    // 将 4-bit 字节掩码展开为 32-bit 掩码
+    wire [31:0] ctrl_byte_mask32 = {
+        {8{ctrl_we_mask[3]}},
+        {8{ctrl_we_mask[2]}},
+        {8{ctrl_we_mask[1]}},
+        {8{ctrl_we_mask[0]}}
+    };
+
+    // RMW：保留旧值中不写的字节，合并新值中要写的字节
+    wire [31:0] merged_wdata = (dmem_rdata & ~ctrl_byte_mask32)
+                             | (ctrl_wdata &  ctrl_byte_mask32);
     assign dmem_wdata = merged_wdata;
-    // 执行 STORE 指令且至少有 1 个字节写入有效时置写使能信号
+
+    // 至少有 1 个字节写入有效时置写使能
     assign dmem_we = mem_write && (|ctrl_we_mask) && global_en;
 
-    // --- 写回选择 ---
-    assign rf_wdata = (wb_sel == 2'b00) ? alu_out :                     // 选择 ALU 计算结果写入寄存器
-                      (wb_sel == 2'b01) ? mem_read_data_processed :     // 选择内存读取结果写入寄存器
-                      (wb_sel == 2'b10) ? pc_plus_4 : 32'b0;            // 选择 PC+4（作为返回地址）写入寄存器
+    // ========================= 写回选择 =========================
+    assign rf_wdata = (wb_sel == 2'b00) ? alu_out :
+                      (wb_sel == 2'b01) ? mem_read_data_processed :
+                      (wb_sel == 2'b10) ? pc_plus_4 : 32'b0;
 
-    // --- Commit (Debug) 信号产生逻辑 ---
+    // ========================= Commit（调试信号） =========================
     reg  [ 0 : 0]   commit_reg          ;
     reg  [31 : 0]   commit_pc_reg       ;
     reg  [31 : 0]   commit_instr_reg    ;
@@ -214,8 +231,8 @@ module CPU (
             commit_reg_we_reg   <= rf_we;
             commit_reg_wa_reg   <= rd;
             commit_reg_wd_reg   <= (rd == 5'b0) ? 32'b0 : rf_wdata;
-            commit_dmem_we_reg  <= (mem_write && (|ctrl_we_mask)); // 表示有有效的内存写操作
-            commit_dmem_wa_reg  <= (mem_read || mem_write) ? dmem_addr : `DATA_MEM_START; // 仅访存时有效，不访存时输出基址以抵消 top.v 的减法
+            commit_dmem_we_reg  <= (mem_write && (|ctrl_we_mask));
+            commit_dmem_wa_reg  <= (mem_read || mem_write) ? dmem_addr : `DATA_MEM_START;
             commit_dmem_wd_reg  <= (mem_write && (|ctrl_we_mask)) ? dmem_wdata : 32'b0;
         end
         else begin
