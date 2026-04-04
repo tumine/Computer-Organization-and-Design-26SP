@@ -47,7 +47,7 @@ module CPU (
     // 越界保护：PC 超出指令存储器范围时将指令置为 NOP
     wire        mem_out_bounds = (pc < `INSTR_MEM_START)
                               || (pc >= `INSTR_MEM_START + (1 << (`INSTR_MEM_DEPTH + 2)));
-    wire [31:0] inst = mem_out_bounds ? 32'b0 : imem_rdata;
+    wire [31:0] inst = mem_out_bounds ? 32'h13 : imem_rdata;
     wire        halt;
 
     // 内部信号
