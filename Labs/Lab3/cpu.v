@@ -177,18 +177,8 @@ module CPU (
     // 数据存储器地址字对齐（低 2 位清零）
     assign dmem_addr = {alu_out[31:2], 2'b00};
 
-    // 将 4-bit 字节掩码展开为 32-bit 掩码
-    wire [31:0] ctrl_byte_mask32 = {
-        {8{ctrl_we_mask[3]}},
-        {8{ctrl_we_mask[2]}},
-        {8{ctrl_we_mask[1]}},
-        {8{ctrl_we_mask[0]}}
-    };
-
-    // RMW：保留旧值中不写的字节，合并新值中要写的字节
-    wire [31:0] merged_wdata = (dmem_rdata & ~ctrl_byte_mask32)
-                             | (ctrl_wdata &  ctrl_byte_mask32);
-    assign dmem_wdata = merged_wdata;
+    // 直接输出由 data_mem_ctrl 已经 RMW 合并好的写数据
+    assign dmem_wdata = ctrl_wdata;
 
     // 至少有 1 个字节写入有效时置写使能
     assign dmem_we = mem_write && (|ctrl_we_mask) && global_en;
