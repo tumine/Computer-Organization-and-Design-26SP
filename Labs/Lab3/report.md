@@ -1,8 +1,8 @@
 ### Task 1
 #### 一、代码结构简要描述
 
-本实验实现了 32 位单周期 RISC‑V CPU（包含 RV32I 基本指令集及 RV32M 乘除扩展）。模块按功能划分如下：
-- `cpu.v`：CPU 顶层模块，内置 PC，向内连接译码器、寄存器堆、立即数生成模块、ALU、比较器与数据内存控制模块，并向上级模块开放连接指令/数据内存的 I/O 端口；负责 `commit` 调试信号输出。
+本实验实现了 **32 位单周期 RISC‑V CPU**（包含 RV32I 基本指令集及 RV32M 乘除扩展）。模块按功能划分如下：
+- `cpu.v`：CPU 顶层模块，**内置** PC，**向内连接**译码器、寄存器堆、立即数生成模块、ALU、比较器与数据内存控制模块，并**向上级模块开放**连接指令/数据内存的 I/O 端口；负责 `commit` 调试信号输出。
 - `decoder.v`：纯组合译码器，根据 `opcode/funct3/funct7` 等生成控制信号（如 `pc_sel`、`rf_we`、`wb_sel`、`alu_op`、`mem_read`/`mem_write`、`halt` 等）。
 - `regfile.v`：32x32 寄存器堆，异步读、时序写，含 debug 只读端口开放给外层 PDU 模块用于随时读取各个寄存器状态。
 - `data_mem_ctrl.v`：数据存储器控制，处理非整字访存（字节/半字的对齐、掩码生成、符号/零扩展，以及利用旧数据合并生成整字写入数据）。
@@ -12,12 +12,12 @@
 
 #### 二、指令执行的数据通路
 
-执行在单个时钟周期内完成，主要步骤：
-1. 取指：PC 寄存器的值送入 `imem_raddr`，从指令内存取回 `imem_rdata`（前置判断 PC 是否越界，在 PC 越界时强制重置当前指令为 NOP）。
-2. 译码与寄存器读：`inst` 送入 `decoder` 与 `imm_gen`，`rs1/rs2` 在 `regfile` 中组合读出 `rf_rdata1/2`。
-3. 执行：ALU 的输入由 `alu_src_a/alu_src_b` 选择（`pc`/`rs1` 与 `imm`/`rs2`），`alu_op` 选择运算类型，输出 `alu_out`。`cmp` 使用 `rf_rdata1/2` 产生 `cmp_res` 用于判断是否执行分支跳转指令。
-4. 访存：若为 Load/Store，`alu_out` 作为地址送至 `data_mem_ctrl`，顶层将 `dmem_addr` 对齐为整字格式。如果为非整字写，`data_mem_ctrl` 会把新写入的字节与从内存读回的旧数据进行**拼接替换**，最后将拼接好的完整 32 位数据写回内存。
-5. 写回与 PC 更新：`wb_sel` 选择 ALU/MEM/PC+4 写回 `rd`；`next_pc` 由 `pc_sel` 和 `is_jalr` 决定（执行 `JALR` 指令时需要将 LSB 清零）。
+指令执行在单个时钟周期内完成，主要步骤包括：
+1. **取指**：PC 寄存器的值送入 `imem_raddr`，从指令内存取回 `imem_rdata`（前置判断 PC 是否越界，在 PC 越界时强制重置当前指令为 NOP）。
+2. **译码与寄存器读**：`inst` 送入 `decoder` 与 `imm_gen`，`rs1/rs2` 在 `regfile` 中组合读出 `rf_rdata1/2`。
+3. **执行**：ALU 的输入由 `alu_src_a/alu_src_b` 选择（`pc`/`rs1` 与 `imm`/`rs2`），`alu_op` 选择运算类型，输出 `alu_out`。`cmp` 使用 `rf_rdata1/2` 产生 `cmp_res` 用于判断是否执行分支跳转指令。
+4. **访存**：若为 Load/Store，`alu_out` 作为地址送至 `data_mem_ctrl`，顶层将 `dmem_addr` 对齐为整字格式。如果为非整字写，`data_mem_ctrl` 会把新写入的字节与从内存读回的旧数据进行**拼接替换**，最后将拼接好的完整 32 位数据写回内存。
+5. **写回与 PC 更新**：`wb_sel` 选择 ALU/MEM/PC+4 写回 `rd`；`next_pc` 由 `pc_sel` 和 `is_jalr` 决定（执行 `JALR` 指令时需要将 LSB 清零）。
 
 #### 三、指令译码的逻辑（`decoder.v`）
 ```riscv
@@ -202,7 +202,7 @@ endmodule
 
 - 同步写：在上升沿用 `regs[rd] <= wdata`（当 `we && rd != 0` 时）提交写入。
 - 异步读：`assign rdata1 = (rs1==0) ? 0 : regs[rs1];`（`rdata2` 同理）。
-- 寄存器 `x0` 被硬连成 0，任何写入 `x0` 都被忽略，读 `x0` 返回 0。
+- 寄存器 `x0` 硬件连线赋 0，任何写入 `x0` 的操作都会被忽略，读 `x0` 寄存器始终返回 0。
 
 #### 五、`EBREAK` 产生 `halt` 信号并传导到外层 PDU 模块的机制
 
@@ -325,7 +325,20 @@ endmodule
 	- 半字访问在 `data_mem_ctrl.v` 中检测 `offset[0]`：若不对齐，读返回 `32'b0`，写将 `we_mask` 置 `4'b0000`（取消对该字的内部写使能）。
 	- 顶层模块 `cpu.v` 统一使用抹去了低 2 位后的强制字对齐地址（`dmem_addr = {alu_out[31:2],2'b00}`）执行访存。
 
+### Task 2
+使用 `rv32i_test1.asm` 测试程序（运算指令测试）在仿真框架上运行的结果如下：![rv32i_test1 测试结果](assets/lab3_rv32i_test1.png)
+
+使用 `rv32i_test2.asm` 测试程序（控制与访存指令测试）在仿真框架上运行的结果如下：![rv32i_test2 测试结果](assets/lab3_rv32i_test2.png)
+
 ### Task 3-2
+#### 冒泡排序程序
+**上板运行**降序冒泡排序程序（详见 `Labs/Lab2/Task2/task2.asm`）前后，查看数据段内存如图所示：![冒泡排序程序在单周期 CPU 上执行效果](assets/lab3_task3_sort_impl.png)
 
+**在 rars 上运行**同样的冒泡排序程序前后，查看数据段内存如图所示：![冒泡排序程序在 rars 上执行效果](assets/lab3_task3_sort_rars.png)
 
+#### 测试程序（`rv32i_test1/2.asm`）
+**上板运行**和**在 rars 上**运行 `rv32_test1.asm` 后，读取 32 个寄存器结果如图所示：
+![test1 在单周期 CPU 和 rars 上执行效果比较](assets/lab3_task3_test1.png)
 
+**上板运行**和**在 rars 上**运行 `rv32_test2.asm` 后，读取 32 个寄存器结果如图所示：
+![test2 在单周期 CPU 和 rars 上执行效果比较](assets/lab3_task3_test2.png)
