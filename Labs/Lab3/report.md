@@ -17,7 +17,7 @@
 2. **译码与寄存器读**：`inst` 送入 `decoder` 与 `imm_gen`，`rs1/rs2` 在 `regfile` 中组合读出 `rf_rdata1/2`。
 3. **执行**：ALU 的输入由 `alu_src_a/alu_src_b` 选择（`pc`/`rs1` 与 `imm`/`rs2`），`alu_op` 选择运算类型，输出 `alu_out`。`cmp` 使用 `rf_rdata1/2` 产生 `cmp_res` 用于判断是否执行分支跳转指令。
 4. **访存**：若为 Load/Store，`alu_out` 作为地址送至 `data_mem_ctrl`，顶层将 `dmem_addr` 对齐为整字格式。如果为非整字写，`data_mem_ctrl` 会把新写入的字节与从内存读回的旧数据进行**拼接替换**，最后将拼接好的完整 32 位数据写回内存。
-5. **写回与 PC 更新**：`wb_sel` 选择 ALU/MEM/PC+4 写回 `rd`；`next_pc` 由 `pc_sel` 和 `is_jalr` 决定（执行 `JALR` 指令时需要将 LSB 清零）。
+5. **写回与 PC 更新**：`wb_sel` 选择 ALU/MEM/PC+4 写回 `rd`；`next_pc` 由 `pc_sel` 和 `is_jalr` 决定（**`JALR` 是 I 型指令**，存在 `imm[0]` 位，但实际跳转时仍然需要遵循 PC 对齐的要求，需要将 LSB 清零）。
 
 #### 三、指令译码的逻辑（`decoder.v`）
 ```riscv
