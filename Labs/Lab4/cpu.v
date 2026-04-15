@@ -187,8 +187,12 @@ module CPU (
     // ========================= EX Stage =========================
     // 本阶段主要执行算术逻辑运算和分支比较，判断跳转并计算下一条指令地址
     // 产生的主要信号和数据：ALU 运算结果 alu_out_EX，比较结果 cmp_res_EX，分支条件与跳转选择信号 pc_sel_EX，PC 新值 next_pc
-    wire [31:0] alu_in_a = alu_src_a_EX ? pc_EX : rf_rdata1_EX;
-    wire [31:0] alu_in_b = alu_src_b_EX ? imm_EX : rf_rdata2_EX;
+    
+    wire [31:0] forwarded_rdata1_EX;
+    wire [31:0] forwarded_rdata2_EX;
+
+    wire [31:0] alu_in_a = alu_src_a_EX ? pc_EX : forwarded_rdata1_EX;
+    wire [31:0] alu_in_b = alu_src_b_EX ? imm_EX : forwarded_rdata2_EX;
     wire [31:0] alu_out_EX;
     wire        cmp_res_EX;
 
@@ -200,8 +204,8 @@ module CPU (
     );
 
     cmp u_cmp (
-        .a          (rf_rdata1_EX),
-        .b          (rf_rdata2_EX),
+        .a          (forwarded_rdata1_EX),
+        .b          (forwarded_rdata2_EX),
         .op         (cmp_op_EX),
         .res        (cmp_res_EX)
     );
@@ -227,7 +231,7 @@ module CPU (
     seg_reg ex_mem_reg (
         .clk(clk), .rst(rst), .en(global_en), .stall(stall), .flush(flush),
         .pc_in(pc_EX), .inst_in(inst_EX), .pc_plus_4_in(pc_plus_4_EX), .commit_in(commit_EX),
-        .rd_in(rd_EX), .rf_rdata2_in(rf_rdata2_EX), .alu_out_in(alu_out_EX),
+        .rd_in(rd_EX), .rf_rdata2_in(forwarded_rdata2_EX), .alu_out_in(alu_out_EX),
         .rf_we_in(rf_we_EX), .wb_sel_in(wb_sel_EX), .mem_write_in(mem_write_EX), .mem_read_in(mem_read_EX), .halt_in(halt_EX),
         .opcode_in(opcode_EX), .funct3_in(funct3_EX),
 
@@ -242,6 +246,7 @@ module CPU (
 
     // ========================= MEM Stage =========================
     // 本阶段主要处理数据存储器的读写逻辑，处理数据的字、半字、字节对齐及符号扩展
+    // 对于非访存指令，本部分透传
     // 产生的主要信号和数据：数据内存访存数据与控制信号 dmem_wdata/dmem_we/dmem_addr，读取后的结果 mem_read_data_processed_MEM
     wire [31:0] mem_read_data_processed_MEM;
     wire [31:0] ctrl_wdata_MEM;
@@ -270,7 +275,7 @@ module CPU (
     wire [1:0]  wb_sel_WB;
     wire        halt_WB;
     wire        mem_write_WB;
-    wire [3:0]  ctrl_we_mask_WB;   // 对于 debug_commit_dmem_we 需要传递
+    wire [3:0]  ctrl_we_mask_WB;   // 为生成 debug_commit_dmem_we 信号，需要把访存掩码一并传递以判断是否发生了内存写入
     wire [31:0] dmem_addr_WB;
     wire [31:0] dmem_wdata_WB;
 
@@ -304,7 +309,8 @@ module CPU (
             commit_dmem_we_r <= 1'b0;
             commit_dmem_wa_r <= 32'b0;
             commit_dmem_wd_r <= 32'b0;
-        end else if (global_en && !stall) begin
+        end
+        else if (global_en && !stall) begin
             commit_dmem_we_r <= mem_write_MEM && (|ctrl_we_mask_MEM);
             commit_dmem_wa_r <= (mem_read_MEM || mem_write_MEM) ? dmem_addr : `DATA_MEM_START;
             commit_dmem_wd_r <= (mem_write_MEM && (|ctrl_we_mask_MEM)) ? dmem_wdata : 32'b0;
@@ -364,5 +370,32 @@ module CPU (
     assign commit_dmem_we   = commit_dmem_we_reg;
     assign commit_dmem_wa   = commit_dmem_wa_reg;
     assign commit_dmem_wd   = commit_dmem_wd_reg;
+
+    // ========================= Forwarding Unit =========================
+    wire [1:0] forward_a;   // 00-寄存器堆，01-上一条指令的 ALU 计算结果，10-上两条指令的写回数据
+    wire [1:0] forward_b;
+    wire [31:0] rf_wdata_MEM;
+
+    // 回顾 wb_sel：00-ALU 运算结果，01-访存结果，10-PC+4
+    // 如果 wb_sel 选通 01，则需要通过 stall 信号停顿一拍再前递
+    assign rf_wdata_MEM = (wb_sel_MEM == 2'b00) ? alu_out_MEM :
+                          (wb_sel_MEM == 2'b10) ? pc_plus_4_MEM : 32'b0;
+
+    // 需要首先检查上一条指令（位于 MEM 阶段）是否对当前指令涉及的寄存器有修改，再检查上两条指令（位于 WB 阶段）
+    // 判定条件：有对寄存器堆的写入->不是写入 x0 寄存器->写入的寄存器号与当前指令需要使用的寄存器号匹配
+    assign forward_a = (rf_we_MEM && rd_MEM != 5'd0 && rd_MEM == rs1_EX) ? 2'b10 :
+                       (rf_we_WB && rd_WB != 5'd0 && rd_WB == rs1_EX) ? 2'b01 : 2'b00;
+
+    assign forward_b = (rf_we_MEM && rd_MEM != 5'd0 && rd_MEM == rs2_EX) ? 2'b10 :
+                       (rf_we_WB && rd_WB != 5'd0 && rd_WB == rs2_EX) ? 2'b01 : 2'b00;
+
+    // 利用 forward_a/b 信号选择理论上正确的寄存器端口输出
+    assign forwarded_rdata1_EX = (forward_a == 2'b10) ? rf_wdata_MEM :
+                                 (forward_a == 2'b01) ? rf_wdata_WB  :
+                                 rf_rdata1_EX;
+
+    assign forwarded_rdata2_EX = (forward_b == 2'b10) ? rf_wdata_MEM :
+                                 (forward_b == 2'b01) ? rf_wdata_WB  :
+                                 rf_rdata2_EX;
 
 endmodule
