@@ -42,151 +42,274 @@ module CPU (
     output                  [31 : 0]            debug_reg_rd
 );
 
-    // ========================= PC 与指令提取 =========================
-    wire [31:0] pc;
-    // 越界保护：PC 超出指令存储器范围时将指令置为 NOP
-    wire        mem_out_bounds = (pc < `INSTR_MEM_START)
-                              || (pc >= `INSTR_MEM_START + (1 << (`INSTR_MEM_DEPTH + 2)));
-    wire [31:0] inst = mem_out_bounds ? 32'h13 : imem_rdata;
-    wire        halt;
+    // ========================= 全局控制信号 =========================
+    // 流水线 stall 和 flush 暂未实现
+    wire stall = 1'b0;
+    wire flush = 1'b0;
 
-    // 内部信号
+    // ========================= IF Stage =========================
+    // 本阶段主要根据 PC 取指，计算下一条连续指令的地址 PC + 4
+    // 产生的主要信号和数据：当前 PC pc_IF，指令内存访存地址 imem_raddr，读取出的指令 inst_IF，PC+4 pc_plus_4_IF
     wire [31:0] next_pc;
-    wire [31:0] pc_plus_4 = pc + 4;
+    wire [31:0] pc_IF;
 
-    // 指令字段提取
-    wire [4:0]  rs1     = inst[19:15];
-    wire [4:0]  rs2     = inst[24:20];
-    wire [4:0]  rd      = inst[11:7];
-    wire [2:0]  funct3  = inst[14:12];
-    wire [6:0]  funct7  = inst[31:25];
-    wire [6:0]  opcode  = inst[6:0];
-
-    wire [31:0] imm;
-    wire [31:0] rf_rdata1, rf_rdata2, rf_wdata;
-    wire [31:0] alu_out;
-    wire        cmp_res;
-
-    // 控制信号
-    wire        pc_sel;
-    wire        rf_we;
-    wire [1:0]  wb_sel;
-    wire        alu_src_a;
-    wire        alu_src_b;
-    wire [4:0]  alu_op;
-    wire [2:0]  cmp_op;
-    wire        mem_write;
-    wire        mem_read;
-    wire        is_jalr;
-
-    // ========================= PC 寄存器 =========================
     reg [31:0] pc_reg;
     always @(posedge clk) begin
         if (rst) begin
             pc_reg <= `INSTR_MEM_START;
         end
-        else if (global_en && !halt) begin
+        else if (global_en && !stall) begin
             pc_reg <= next_pc;
         end
     end
-    assign pc = pc_reg;
-    assign imem_raddr = pc;
+    assign pc_IF = pc_reg;
+    assign imem_raddr = pc_IF;
 
-    // JALR 跳转目标需要将 LSB 清零：target = (rs1 + imm) & ~1
-    // 其他跳转指令直接使用 ALU 输出
-    assign next_pc = pc_sel ? (is_jalr ? {alu_out[31:1], 1'b0} : alu_out)
-                            : pc_plus_4;
+    wire        mem_out_bounds = (pc_IF < `INSTR_MEM_START)
+                              || (pc_IF >= `INSTR_MEM_START + (1 << (`INSTR_MEM_DEPTH + 2)));
+    wire [31:0] inst_IF = mem_out_bounds ? 32'h13 : imem_rdata; // PC 越界，执行 NOP
+    wire [31:0] pc_plus_4_IF = pc_IF + 4;
+    wire        commit_IF = 1'b1;
 
-    // ========================= 控制单元（译码器） =========================
-    decoder u_decoder (
-        .opcode     (opcode),
-        .funct3     (funct3),
-        .funct7     (funct7),
-        .cmp_res    (cmp_res),
-        .inst20     (inst[20]),
+    // ========================= IF/ID Pipeline Register =========================
+    wire [31:0] pc_ID, inst_ID, pc_plus_4_ID;
+    wire        commit_ID;
 
-        .pc_sel     (pc_sel),
-        .rf_we      (rf_we),
-        .wb_sel     (wb_sel),
-        .alu_src_a  (alu_src_a),
-        .alu_src_b  (alu_src_b),
-        .alu_op     (alu_op),
-        .cmp_op     (cmp_op),
-        .mem_write  (mem_write),
-        .mem_read   (mem_read),
-        .is_jalr    (is_jalr),
-        .halt       (halt)
+    seg_reg if_id_reg (
+        .clk(clk), .rst(rst), .en(global_en), .stall(stall), .flush(flush),
+        .pc_in(pc_IF), .inst_in(inst_IF), .pc_plus_4_in(pc_plus_4_IF), .commit_in(commit_IF),
+        .pc_out(pc_ID), .inst_out(inst_ID), .pc_plus_4_out(pc_plus_4_ID), .commit_out(commit_ID),
+        // unused signals
+        .rs1_in(5'b0), .rs2_in(5'b0), .rd_in(5'b0), .imm_in(32'b0), .rf_rdata1_in(32'b0), .rf_rdata2_in(32'b0),
+        .pc_sel_in(1'b0), .rf_we_in(1'b0), .wb_sel_in(2'b0), .alu_src_a_in(1'b0), .alu_src_b_in(1'b0),
+        .alu_op_in(5'b0), .cmp_op_in(3'b0), .mem_write_in(1'b0), .mem_read_in(1'b0), .is_jalr_in(1'b0), .halt_in(1'b0),
+        .opcode_in(7'b0), .funct3_in(3'b0), .funct7_in(7'b0), .cmp_res_in(1'b0), .alu_out_in(32'b0), .mem_read_data_in(32'b0)
     );
 
-    // ========================= 寄存器堆 =========================
+    // ========================= ID Stage =========================
+    // 本阶段主要对指令进行译码，读取寄存器堆，生成立即数
+    // 产生的主要信号和数据：寄存器索引 rs1/rs2/rd_ID，立即数 imm_ID，寄存器读出的数据 rf_rdata1/2_ID，译码器输出的控制信号
+    wire [4:0]  rs1_ID     = inst_ID[19:15];
+    wire [4:0]  rs2_ID     = inst_ID[24:20];
+    wire [4:0]  rd_ID      = inst_ID[11:7];
+    wire [2:0]  funct3_ID  = inst_ID[14:12];
+    wire [6:0]  funct7_ID  = inst_ID[31:25];
+    wire [6:0]  opcode_ID  = inst_ID[6:0];
+    wire [31:0] imm_ID;
+
+    wire [31:0] rf_rdata1_ID, rf_rdata2_ID;
+
+    // 来自 WB 阶段的写回信号
+    wire        rf_we_WB;
+    wire [4:0]  rd_WB;
+    wire [31:0] rf_wdata_WB;
+
     regfile u_regfile (
         .clk        (clk),
-        .we         (rf_we && global_en && !halt),
-        .rs1        (rs1),
-        .rs2        (rs2),
-        .rd         (rd),
-        .wdata      (rf_wdata),
-        .rdata1     (rf_rdata1),
-        .rdata2     (rf_rdata2),
+        .we         (rf_we_WB && global_en),
+        .rs1        (rs1_ID),
+        .rs2        (rs2_ID),
+        .rd         (rd_WB),
+        .wdata      (rf_wdata_WB),
+        .rdata1     (rf_rdata1_ID),
+        .rdata2     (rf_rdata2_ID),
         .debug_ra   (debug_reg_ra),
         .debug_rd   (debug_reg_rd)
     );
 
-    // ========================= 立即数生成 =========================
     imm_gen u_imm_gen (
-        .inst       (inst),
-        .imm        (imm)
+        .inst       (inst_ID),
+        .imm        (imm_ID)
     );
 
-    // ========================= ALU =========================
-    wire [31:0] alu_in_a = alu_src_a ? pc : rf_rdata1;
-    wire [31:0] alu_in_b = alu_src_b ? imm : rf_rdata2;
+    // 译码器输出控制信号
+    wire        rf_we_ID;
+    wire [1:0]  wb_sel_ID;
+    wire        alu_src_a_ID;
+    wire        alu_src_b_ID;
+    wire [4:0]  alu_op_ID;
+    wire [2:0]  cmp_op_ID;
+    wire        mem_write_ID;
+    wire        mem_read_ID;
+    wire        is_jalr_ID;
+    wire        halt_ID;
+
+    // 分支判断结果 cmp_res 尚未产生，传递给译码器的 cmp_res 为 0
+    decoder u_decoder (
+        .opcode     (opcode_ID),
+        .funct3     (funct3_ID),
+        .funct7     (funct7_ID),
+        .cmp_res    (1'b0),     // 分支判断结果尚未产生
+        .inst20     (inst_ID[20]),
+
+        .rf_we      (rf_we_ID),
+        .wb_sel     (wb_sel_ID),
+        .alu_src_a  (alu_src_a_ID),
+        .alu_src_b  (alu_src_b_ID),
+        .alu_op     (alu_op_ID),
+        .cmp_op     (cmp_op_ID),
+        .mem_write  (mem_write_ID),
+        .mem_read   (mem_read_ID),
+        .is_jalr    (is_jalr_ID),
+        .halt       (halt_ID)
+    );
+
+    // ========================= ID/EX Pipeline Register =========================
+    wire [31:0] pc_EX, inst_EX, pc_plus_4_EX;
+    wire        commit_EX;
+    wire [4:0]  rs1_EX, rs2_EX, rd_EX;
+    wire [31:0] imm_EX, rf_rdata1_EX, rf_rdata2_EX;
+    wire        rf_we_EX, alu_src_a_EX, alu_src_b_EX, mem_write_EX, mem_read_EX, is_jalr_EX, halt_EX;
+    wire [1:0]  wb_sel_EX;
+    wire [4:0]  alu_op_EX;
+    wire [2:0]  cmp_op_EX;
+    wire [6:0]  opcode_EX;
+    wire [2:0]  funct3_EX;
+    wire [6:0]  funct7_EX;
+
+    seg_reg id_ex_reg (
+        .clk(clk), .rst(rst), .en(global_en), .stall(stall), .flush(flush),
+        .pc_in(pc_ID), .inst_in(inst_ID), .pc_plus_4_in(pc_plus_4_ID), .commit_in(commit_ID),
+        .rs1_in(rs1_ID), .rs2_in(rs2_ID), .rd_in(rd_ID), .imm_in(imm_ID), .rf_rdata1_in(rf_rdata1_ID), .rf_rdata2_in(rf_rdata2_ID),
+        .rf_we_in(rf_we_ID), .wb_sel_in(wb_sel_ID), .alu_src_a_in(alu_src_a_ID), .alu_src_b_in(alu_src_b_ID),
+        .alu_op_in(alu_op_ID), .cmp_op_in(cmp_op_ID), .mem_write_in(mem_write_ID), .mem_read_in(mem_read_ID), .is_jalr_in(is_jalr_ID), .halt_in(halt_ID),
+        .opcode_in(opcode_ID), .funct3_in(funct3_ID), .funct7_in(funct7_ID),
+        
+        .pc_out(pc_EX), .inst_out(inst_EX), .pc_plus_4_out(pc_plus_4_EX), .commit_out(commit_EX),
+        .rs1_out(rs1_EX), .rs2_out(rs2_EX), .rd_out(rd_EX), .imm_out(imm_EX), .rf_rdata1_out(rf_rdata1_EX), .rf_rdata2_out(rf_rdata2_EX),
+        .rf_we_out(rf_we_EX), .wb_sel_out(wb_sel_EX), .alu_src_a_out(alu_src_a_EX), .alu_src_b_out(alu_src_b_EX),
+        .alu_op_out(alu_op_EX), .cmp_op_out(cmp_op_EX), .mem_write_out(mem_write_EX), .mem_read_out(mem_read_EX), .is_jalr_out(is_jalr_EX), .halt_out(halt_EX),
+        .opcode_out(opcode_EX), .funct3_out(funct3_EX), .funct7_out(funct7_EX),
+        // unused
+        .pc_sel_in(1'b0), .cmp_res_in(1'b0), .alu_out_in(32'b0), .mem_read_data_in(32'b0)
+    );
+
+    // ========================= EX Stage =========================
+    // 本阶段主要执行算术逻辑运算和分支比较，判断跳转并计算下一条指令地址
+    // 产生的主要信号和数据：ALU 运算结果 alu_out_EX，比较结果 cmp_res_EX，分支条件与跳转选择信号 pc_sel_EX，PC 新值 next_pc
+    wire [31:0] alu_in_a = alu_src_a_EX ? pc_EX : rf_rdata1_EX;
+    wire [31:0] alu_in_b = alu_src_b_EX ? imm_EX : rf_rdata2_EX;
+    wire [31:0] alu_out_EX;
+    wire        cmp_res_EX;
 
     alu u_alu (
         .a          (alu_in_a),
         .b          (alu_in_b),
-        .op         (alu_op),
-        .out        (alu_out)
+        .op         (alu_op_EX),
+        .out        (alu_out_EX)
     );
 
-    // ========================= 分支比较器 =========================
     cmp u_cmp (
-        .a          (rf_rdata1),
-        .b          (rf_rdata2),
-        .op         (cmp_op),
-        .res        (cmp_res)
+        .a          (rf_rdata1_EX),
+        .b          (rf_rdata2_EX),
+        .op         (cmp_op_EX),
+        .res        (cmp_res_EX)
     );
 
-    // ========================= 数据存储器访问控制 =========================
-    wire [31:0] mem_read_data_processed;
-    wire [31:0] ctrl_wdata;
-    wire [ 3:0] ctrl_we_mask;
+    // 重新计算 pc_sel
+    wire is_branch_EX = (opcode_EX == 7'b1100011);
+    wire is_jal_EX    = (opcode_EX == 7'b1101111);
+    wire pc_sel_EX    = is_branch_EX ? cmp_res_EX : (is_jal_EX | is_jalr_EX);
+
+    // PC 更新逻辑
+    assign next_pc = pc_sel_EX ? (is_jalr_EX ? {alu_out_EX[31:1], 1'b0} : alu_out_EX)
+                               : pc_plus_4_IF; // 默认步进取 IF 的 pc_plus_4_IF
+
+    // ========================= EX/MEM Pipeline Register =========================
+    wire [31:0] pc_MEM, inst_MEM, pc_plus_4_MEM, alu_out_MEM, rf_rdata2_MEM;
+    wire        commit_MEM;
+    wire [4:0]  rd_MEM;
+    wire        rf_we_MEM, mem_write_MEM, mem_read_MEM, halt_MEM;
+    wire [1:0]  wb_sel_MEM;
+    wire [6:0]  opcode_MEM;
+    wire [2:0]  funct3_MEM;
+
+    seg_reg ex_mem_reg (
+        .clk(clk), .rst(rst), .en(global_en), .stall(stall), .flush(flush),
+        .pc_in(pc_EX), .inst_in(inst_EX), .pc_plus_4_in(pc_plus_4_EX), .commit_in(commit_EX),
+        .rd_in(rd_EX), .rf_rdata2_in(rf_rdata2_EX), .alu_out_in(alu_out_EX),
+        .rf_we_in(rf_we_EX), .wb_sel_in(wb_sel_EX), .mem_write_in(mem_write_EX), .mem_read_in(mem_read_EX), .halt_in(halt_EX),
+        .opcode_in(opcode_EX), .funct3_in(funct3_EX),
+
+        .pc_out(pc_MEM), .inst_out(inst_MEM), .pc_plus_4_out(pc_plus_4_MEM), .commit_out(commit_MEM),
+        .rd_out(rd_MEM), .rf_rdata2_out(rf_rdata2_MEM), .alu_out_out(alu_out_MEM),
+        .rf_we_out(rf_we_MEM), .wb_sel_out(wb_sel_MEM), .mem_write_out(mem_write_MEM), .mem_read_out(mem_read_MEM), .halt_out(halt_MEM),
+        .opcode_out(opcode_MEM), .funct3_out(funct3_MEM),
+        // unused
+        .rs1_in(5'b0), .rs2_in(5'b0), .imm_in(32'b0), .rf_rdata1_in(32'b0), .pc_sel_in(1'b0), .alu_src_a_in(1'b0), .alu_src_b_in(1'b0),
+        .alu_op_in(5'b0), .cmp_op_in(3'b0), .is_jalr_in(1'b0), .funct7_in(7'b0), .cmp_res_in(1'b0), .mem_read_data_in(32'b0)
+    );
+
+    // ========================= MEM Stage =========================
+    // 本阶段主要处理数据存储器的读写逻辑，处理数据的字、半字、字节对齐及符号扩展
+    // 产生的主要信号和数据：数据内存访存数据与控制信号 dmem_wdata/dmem_we/dmem_addr，读取后的结果 mem_read_data_processed_MEM
+    wire [31:0] mem_read_data_processed_MEM;
+    wire [31:0] ctrl_wdata_MEM;
+    wire [ 3:0] ctrl_we_mask_MEM;
 
     data_mem_ctrl u_data_mem_ctrl (
-        .addr       (alu_out),
-        .funct3     (funct3),
-        .mem_write  (mem_write),
-        .mem_read   (mem_read),
-        .wdata_in   (rf_rdata2),
+        .addr       (alu_out_MEM),
+        .funct3     (funct3_MEM),
+        .mem_write  (mem_write_MEM),
+        .mem_read   (mem_read_MEM),
+        .wdata_in   (rf_rdata2_MEM),
         .rdata_in   (dmem_rdata),
-        .wdata_out  (ctrl_wdata),
-        .we_mask    (ctrl_we_mask),
-        .rdata_out  (mem_read_data_processed)
+        .wdata_out  (ctrl_wdata_MEM),
+        .we_mask    (ctrl_we_mask_MEM),
+        .rdata_out  (mem_read_data_processed_MEM)
     );
 
     // 数据存储器地址字对齐（低 2 位清零）
-    assign dmem_addr = {alu_out[31:2], 2'b00};
+    assign dmem_addr = {alu_out_MEM[31:2], 2'b00};
+    assign dmem_wdata = ctrl_wdata_MEM;
+    assign dmem_we = mem_write_MEM && (|ctrl_we_mask_MEM) && global_en;
 
-    // 直接输出由 data_mem_ctrl 已经 RMW 合并好的写数据
-    assign dmem_wdata = ctrl_wdata;
+    // ========================= MEM/WB Pipeline Register =========================
+    wire [31:0] pc_WB, inst_WB, pc_plus_4_WB, alu_out_WB, mem_read_data_WB;
+    wire        commit_WB;
+    wire [1:0]  wb_sel_WB;
+    wire        halt_WB;
+    wire        mem_write_WB;
+    wire [3:0]  ctrl_we_mask_WB;   // 对于 debug_commit_dmem_we 需要传递
+    wire [31:0] dmem_addr_WB;
+    wire [31:0] dmem_wdata_WB;
 
-    // 至少有 1 个字节写入有效时置写使能
-    assign dmem_we = mem_write && (|ctrl_we_mask) && global_en;
+    seg_reg mem_wb_reg (
+        .clk(clk), .rst(rst), .en(global_en), .stall(stall), .flush(flush),
+        .pc_in(pc_MEM), .inst_in(inst_MEM), .pc_plus_4_in(pc_plus_4_MEM), .commit_in(commit_MEM),
+        .rd_in(rd_MEM), .alu_out_in(alu_out_MEM), .mem_read_data_in(mem_read_data_processed_MEM),
+        .rf_we_in(rf_we_MEM), .wb_sel_in(wb_sel_MEM), .halt_in(halt_MEM),
 
-    // ========================= 写回选择 =========================
-    assign rf_wdata = (wb_sel == 2'b00) ? alu_out :
-                      (wb_sel == 2'b01) ? mem_read_data_processed :
-                      (wb_sel == 2'b10) ? pc_plus_4 : 32'b0;
+        .pc_out(pc_WB), .inst_out(inst_WB), .pc_plus_4_out(pc_plus_4_WB), .commit_out(commit_WB),
+        .rd_out(rd_WB), .alu_out_out(alu_out_WB), .mem_read_data_out(mem_read_data_WB),
+        .rf_we_out(rf_we_WB), .wb_sel_out(wb_sel_WB), .halt_out(halt_WB),
+        // unused
+        .rs1_in(5'b0), .rs2_in(5'b0), .imm_in(32'b0), .rf_rdata1_in(32'b0), .rf_rdata2_in(32'b0),
+        .pc_sel_in(1'b0), .alu_src_a_in(1'b0), .alu_src_b_in(1'b0), .alu_op_in(5'b0), .cmp_op_in(3'b0),
+        .mem_write_in(1'b0), .mem_read_in(1'b0), .is_jalr_in(1'b0), .opcode_in(7'b0), .funct3_in(3'b0), .funct7_in(7'b0), .cmp_res_in(1'b0)
+    );
+
+    // ========================= WB Stage =========================
+    // 本阶段主要选择并确定需要写回寄存器堆的数据
+    // 产生的主要信号和数据：最终要写回寄存器的数据 rf_wdata_WB，同时在这里收集调试用的 commit 信号
+    assign rf_wdata_WB = (wb_sel_WB == 2'b00) ? alu_out_WB :
+                         (wb_sel_WB == 2'b01) ? mem_read_data_WB :
+                         (wb_sel_WB == 2'b10) ? pc_plus_4_WB : 32'b0;
+
+    reg commit_dmem_we_r;
+    reg [31:0] commit_dmem_wa_r;
+    reg [31:0] commit_dmem_wd_r;
+    always @(posedge clk) begin
+        if (rst) begin
+            commit_dmem_we_r <= 1'b0;
+            commit_dmem_wa_r <= 32'b0;
+            commit_dmem_wd_r <= 32'b0;
+        end else if (global_en && !stall) begin
+            commit_dmem_we_r <= mem_write_MEM && (|ctrl_we_mask_MEM);
+            commit_dmem_wa_r <= (mem_read_MEM || mem_write_MEM) ? dmem_addr : `DATA_MEM_START;
+            commit_dmem_wd_r <= (mem_write_MEM && (|ctrl_we_mask_MEM)) ? dmem_wdata : 32'b0;
+        end
+    end
 
     // ========================= Commit（调试信号） =========================
     reg  [ 0 : 0]   commit_reg          ;
@@ -200,6 +323,7 @@ module CPU (
     reg  [31 : 0]   commit_dmem_wa_reg  ;
     reg  [31 : 0]   commit_dmem_wd_reg  ;
 
+    // 各个 commit 信号输出跟随 WB 段后结果
     always @(posedge clk) begin
         if (rst) begin
             commit_reg          <= 1'b0;
@@ -214,16 +338,16 @@ module CPU (
             commit_dmem_wd_reg  <= 32'b0;
         end
         else if (global_en) begin
-            commit_reg          <= 1'b1;
-            commit_pc_reg       <= pc;
-            commit_instr_reg    <= inst;
-            commit_halt_reg     <= halt;
-            commit_reg_we_reg   <= rf_we;
-            commit_reg_wa_reg   <= rd;
-            commit_reg_wd_reg   <= (rd == 5'b0) ? 32'b0 : rf_wdata;
-            commit_dmem_we_reg  <= (mem_write && (|ctrl_we_mask));
-            commit_dmem_wa_reg  <= (mem_read || mem_write) ? dmem_addr : `DATA_MEM_START;
-            commit_dmem_wd_reg  <= (mem_write && (|ctrl_we_mask)) ? dmem_wdata : 32'b0;
+            commit_reg          <= commit_WB;
+            commit_pc_reg       <= pc_WB;
+            commit_instr_reg    <= inst_WB;
+            commit_halt_reg     <= halt_WB;
+            commit_reg_we_reg   <= rf_we_WB;
+            commit_reg_wa_reg   <= rd_WB;
+            commit_reg_wd_reg   <= (rd_WB == 5'b0) ? 32'b0 : rf_wdata_WB;
+            commit_dmem_we_reg  <= commit_dmem_we_r;
+            commit_dmem_wa_reg  <= commit_dmem_wa_r;
+            commit_dmem_wd_reg  <= commit_dmem_wd_r;
         end
         else begin
             commit_reg <= 1'b0;
