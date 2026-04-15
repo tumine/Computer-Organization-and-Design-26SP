@@ -1,3 +1,6 @@
+// 译码器模块
+// 生成控制信号
+// 在多周期流水线 CPU 中，PC 跳转控制信号需要在 EX 阶段才能给出，因此译码器模块不再给出此信号
 module decoder (
     input  wire [6:0] opcode,
     input  wire [2:0] funct3,
@@ -6,7 +9,7 @@ module decoder (
     input  wire       inst20,       // inst[20]，用于区分 ECALL / EBREAK
 
     // 控制信号输出
-    output reg        pc_sel,       // 0: PC+4, 1: 跳转目标
+    // output reg        pc_sel,       // 0: PC+4, 1: 跳转目标
     output reg        rf_we,        // 寄存器堆写使能
     output reg  [1:0] wb_sel,       // 写回选择 00:ALU 01:MEM 10:PC+4
     output reg        alu_src_a,    // 0: rs1, 1: PC
@@ -55,7 +58,7 @@ module decoder (
 
     always @(*) begin
         // 默认值
-        pc_sel    = 0;
+        // pc_sel    = 0;
         rf_we     = 0;
         wb_sel    = 2'b00;
         alu_src_a = 0;
@@ -145,7 +148,7 @@ module decoder (
                 alu_src_a = 1;          // PC
                 alu_src_b = 1;          // imm
                 alu_op    = ADD;        // 计算跳转目标 PC + imm
-                pc_sel    = cmp_res;    // 比较成立则跳转
+                // pc_sel    = cmp_res;    // 比较成立则跳转
             end
 
             // ==================== JAL 指令（J 型） ====================
@@ -155,7 +158,7 @@ module decoder (
                 alu_src_a = 1;          // PC
                 alu_src_b = 1;          // imm
                 alu_op    = ADD;        // 计算跳转目标 PC + imm
-                pc_sel    = 1;          // 无条件跳转
+                // pc_sel    = 1;          // 无条件跳转
             end
 
             // ==================== JALR 指令（I 型） ====================
@@ -166,7 +169,7 @@ module decoder (
                 alu_src_a = 0;          // rs1
                 alu_src_b = 1;          // imm
                 alu_op    = ADD;        // 计算 rs1 + imm
-                pc_sel    = 1;          // 无条件跳转
+                // pc_sel    = 1;          // 无条件跳转
                 is_jalr   = 1;          // 标记 JALR，CPU 中将 LSB 清零
             end
 
