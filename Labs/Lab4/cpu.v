@@ -41,11 +41,7 @@ module CPU (
     input                   [ 4 : 0]            debug_reg_ra,
     output                  [31 : 0]            debug_reg_rd
 );
-
-    // ========================= 全局控制信号 =========================
-    // 流水线 stall 和 flush 暂未实现
-    wire stall = 1'b0;
-    wire flush = 1'b0;
+    // 5 级流水线：IF-ID-EX-MEM-WB
 
     // ========================= IF Stage =========================
     // 本阶段主要根据 PC 取指，计算下一条连续指令的地址 PC + 4
@@ -58,7 +54,7 @@ module CPU (
         if (rst) begin
             pc_reg <= `INSTR_MEM_START;
         end
-        else if (global_en && !stall) begin
+        else if (global_en && !pc_stall) begin
             pc_reg <= next_pc;
         end
     end
@@ -76,7 +72,7 @@ module CPU (
     wire        commit_ID;
 
     seg_reg if_id_reg (
-        .clk(clk), .rst(rst), .en(global_en), .stall(stall), .flush(flush),
+        .clk(clk), .rst(rst), .en(global_en), .stall(if_id_stall), .flush(if_id_flush),
         .pc_in(pc_IF), .inst_in(inst_IF), .pc_plus_4_in(pc_plus_4_IF), .commit_in(commit_IF),
         .pc_out(pc_ID), .inst_out(inst_ID), .pc_plus_4_out(pc_plus_4_ID), .commit_out(commit_ID),
         // unused signals
@@ -168,7 +164,7 @@ module CPU (
     wire [6:0]  funct7_EX;
 
     seg_reg id_ex_reg (
-        .clk(clk), .rst(rst), .en(global_en), .stall(stall), .flush(flush),
+        .clk(clk), .rst(rst), .en(global_en), .stall(stall), .flush(id_ex_flush),
         .pc_in(pc_ID), .inst_in(inst_ID), .pc_plus_4_in(pc_plus_4_ID), .commit_in(commit_ID),
         .rs1_in(rs1_ID), .rs2_in(rs2_ID), .rd_in(rd_ID), .imm_in(imm_ID), .rf_rdata1_in(rf_rdata1_ID), .rf_rdata2_in(rf_rdata2_ID),
         .rf_we_in(rf_we_ID), .wb_sel_in(wb_sel_ID), .alu_src_a_in(alu_src_a_ID), .alu_src_b_in(alu_src_b_ID),
@@ -397,5 +393,22 @@ module CPU (
     assign forwarded_rdata2_EX = (forward_b == 2'b10) ? rf_wdata_MEM :
                                  (forward_b == 2'b01) ? rf_wdata_WB  :
                                  rf_rdata2_EX;
+                                 
+    // ========================= Hazard Detection Unit =========================
+    
+    // 冒险检测：当前位于 EX(3) 阶段的指令将要读内存，且读出的值要存入的寄存器就是 ID(2) 阶段指令要读取的寄存器
+    wire load_use_hazard = mem_read_EX && (rd_EX != 5'd0) && (rd_EX == rs1_ID || rd_EX == rs2_ID);
+    
+    // 如果当前指令需要跳转（pc_sel_EX = 1），就需要刷新取错的指令
+    wire control_hazard = pc_sel_EX;
+
+    // 流水线冒险控制信号
+    wire pc_stall    = load_use_hazard;
+    wire if_id_stall = load_use_hazard;
+    wire if_id_flush = control_hazard;
+    wire id_ex_flush = load_use_hazard || control_hazard;
+    
+    wire stall = 1'b0;
+    wire flush = 1'b0;
 
 endmodule
