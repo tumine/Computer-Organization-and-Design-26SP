@@ -79,7 +79,11 @@ module CPU (
         .rs1_in(5'b0), .rs2_in(5'b0), .rd_in(5'b0), .imm_in(32'b0), .rf_rdata1_in(32'b0), .rf_rdata2_in(32'b0),
         .pc_sel_in(1'b0), .rf_we_in(1'b0), .wb_sel_in(2'b0), .alu_src_a_in(1'b0), .alu_src_b_in(1'b0),
         .alu_op_in(5'b0), .cmp_op_in(3'b0), .mem_write_in(1'b0), .mem_read_in(1'b0), .is_jalr_in(1'b0), .halt_in(1'b0),
-        .opcode_in(7'b0), .funct3_in(3'b0), .funct7_in(7'b0), .cmp_res_in(1'b0), .alu_out_in(32'b0), .mem_read_data_in(32'b0)
+        .opcode_in(7'b0), .funct3_in(3'b0), .funct7_in(7'b0), .cmp_res_in(1'b0), .alu_out_in(32'b0), .mem_read_data_in(32'b0),
+        .rs1_out(), .rs2_out(), .rd_out(), .imm_out(), .rf_rdata1_out(), .rf_rdata2_out(),
+        .pc_sel_out(), .rf_we_out(), .wb_sel_out(), .alu_src_a_out(), .alu_src_b_out(),
+        .alu_op_out(), .cmp_op_out(), .mem_write_out(), .mem_read_out(), .is_jalr_out(), .halt_out(),
+        .opcode_out(), .funct3_out(), .funct7_out(), .cmp_res_out(), .alu_out_out(), .mem_read_data_out()
     );
 
     // ========================= ID Stage =========================
@@ -94,6 +98,8 @@ module CPU (
     wire [31:0] imm_ID;
 
     wire [31:0] rf_rdata1_ID, rf_rdata2_ID;
+
+    wire [31:0] forwarded_rf_rdata1_ID, forwarded_rf_rdata2_ID;
 
     // 来自 WB 阶段的写回信号
     wire        rf_we_WB;
@@ -166,7 +172,7 @@ module CPU (
     seg_reg id_ex_reg (
         .clk(clk), .rst(rst), .en(global_en), .stall(stall), .flush(id_ex_flush),
         .pc_in(pc_ID), .inst_in(inst_ID), .pc_plus_4_in(pc_plus_4_ID), .commit_in(commit_ID),
-        .rs1_in(rs1_ID), .rs2_in(rs2_ID), .rd_in(rd_ID), .imm_in(imm_ID), .rf_rdata1_in(rf_rdata1_ID), .rf_rdata2_in(rf_rdata2_ID),
+        .rs1_in(rs1_ID), .rs2_in(rs2_ID), .rd_in(rd_ID), .imm_in(imm_ID), .rf_rdata1_in(forwarded_rf_rdata1_ID), .rf_rdata2_in(forwarded_rf_rdata2_ID),
         .rf_we_in(rf_we_ID), .wb_sel_in(wb_sel_ID), .alu_src_a_in(alu_src_a_ID), .alu_src_b_in(alu_src_b_ID),
         .alu_op_in(alu_op_ID), .cmp_op_in(cmp_op_ID), .mem_write_in(mem_write_ID), .mem_read_in(mem_read_ID), .is_jalr_in(is_jalr_ID), .halt_in(halt_ID),
         .opcode_in(opcode_ID), .funct3_in(funct3_ID), .funct7_in(funct7_ID),
@@ -177,7 +183,8 @@ module CPU (
         .alu_op_out(alu_op_EX), .cmp_op_out(cmp_op_EX), .mem_write_out(mem_write_EX), .mem_read_out(mem_read_EX), .is_jalr_out(is_jalr_EX), .halt_out(halt_EX),
         .opcode_out(opcode_EX), .funct3_out(funct3_EX), .funct7_out(funct7_EX),
         // unused
-        .pc_sel_in(1'b0), .cmp_res_in(1'b0), .alu_out_in(32'b0), .mem_read_data_in(32'b0)
+        .pc_sel_in(1'b0), .cmp_res_in(1'b0), .alu_out_in(32'b0), .mem_read_data_in(32'b0),
+        .pc_sel_out(), .cmp_res_out(), .alu_out_out(), .mem_read_data_out()
     );
 
     // ========================= EX Stage =========================
@@ -237,7 +244,9 @@ module CPU (
         .opcode_out(opcode_MEM), .funct3_out(funct3_MEM),
         // unused
         .rs1_in(5'b0), .rs2_in(5'b0), .imm_in(32'b0), .rf_rdata1_in(32'b0), .pc_sel_in(1'b0), .alu_src_a_in(1'b0), .alu_src_b_in(1'b0),
-        .alu_op_in(5'b0), .cmp_op_in(3'b0), .is_jalr_in(1'b0), .funct7_in(7'b0), .cmp_res_in(1'b0), .mem_read_data_in(32'b0)
+        .alu_op_in(5'b0), .cmp_op_in(3'b0), .is_jalr_in(1'b0), .funct7_in(7'b0), .cmp_res_in(1'b0), .mem_read_data_in(32'b0),
+        .rs1_out(), .rs2_out(), .imm_out(), .rf_rdata1_out(), .pc_sel_out(), .alu_src_a_out(), .alu_src_b_out(),
+        .alu_op_out(), .cmp_op_out(), .is_jalr_out(), .funct7_out(), .cmp_res_out(), .mem_read_data_out()
     );
 
     // ========================= MEM Stage =========================
@@ -287,7 +296,10 @@ module CPU (
         // unused
         .rs1_in(5'b0), .rs2_in(5'b0), .imm_in(32'b0), .rf_rdata1_in(32'b0), .rf_rdata2_in(32'b0),
         .pc_sel_in(1'b0), .alu_src_a_in(1'b0), .alu_src_b_in(1'b0), .alu_op_in(5'b0), .cmp_op_in(3'b0),
-        .mem_write_in(1'b0), .mem_read_in(1'b0), .is_jalr_in(1'b0), .opcode_in(7'b0), .funct3_in(3'b0), .funct7_in(7'b0), .cmp_res_in(1'b0)
+        .mem_write_in(1'b0), .mem_read_in(1'b0), .is_jalr_in(1'b0), .opcode_in(7'b0), .funct3_in(3'b0), .funct7_in(7'b0), .cmp_res_in(1'b0),
+        .rs1_out(), .rs2_out(), .imm_out(), .rf_rdata1_out(), .rf_rdata2_out(),
+        .pc_sel_out(), .alu_src_a_out(), .alu_src_b_out(), .alu_op_out(), .cmp_op_out(),
+        .mem_write_out(), .mem_read_out(), .is_jalr_out(), .opcode_out(), .funct3_out(), .funct7_out(), .cmp_res_out()
     );
 
     // ========================= WB Stage =========================
@@ -393,6 +405,12 @@ module CPU (
     assign forwarded_rdata2_EX = (forward_b == 2'b10) ? rf_wdata_MEM :
                                  (forward_b == 2'b01) ? rf_wdata_WB  :
                                  rf_rdata2_EX;
+
+    assign forwarded_rf_rdata1_ID = (rf_we_WB && rd_WB != 5'd0 && rs1_ID == rd_WB) ? 
+                                    rf_wdata_WB : rf_rdata1_ID;
+    
+    assign forwarded_rf_rdata2_ID = (rf_we_WB && rd_WB != 5'd0 && rs2_ID == rd_WB) ? 
+                                    rf_wdata_WB : rf_rdata2_ID;
                                  
     // ========================= Hazard Detection Unit =========================
     
