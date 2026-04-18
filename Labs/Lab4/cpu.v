@@ -270,13 +270,9 @@ module CPU (
     );
 
     // 数据存储器地址字对齐（低 2 位清零）
-    wire [31:0] current_mem_addr = {alu_out_MEM[31:2], 2'b00};
-    // 为了保证前一条位于 WB 的指令顺利通过 Difftest 的比对，需要暂时将当前阶段的指令对内存的写入参数遮蔽
-    // 如果前一条指令也是内存写入，就呈现前一条指令的写入地址和数据
-    // 如果前一条指令不是内存写入，可以正常呈现当前指令的写入地址和数据，不会影响 Difftest 的比对结果
-    assign dmem_addr = commit_dmem_we_r ? commit_dmem_wa_r : current_mem_addr;
-    assign dmem_wdata = commit_dmem_we_r ? commit_dmem_wd_r : ctrl_wdata_MEM;
-    assign dmem_we = commit_dmem_we_r && global_en;
+    assign dmem_addr = {alu_out_MEM[31:2], 2'b00};
+    assign dmem_wdata = ctrl_wdata_MEM;
+    assign dmem_we = mem_write_MEM && (|ctrl_we_mask_MEM) && global_en;
 
     // ========================= MEM/WB Pipeline Register =========================
     wire [31:0] pc_WB, inst_WB, pc_plus_4_WB, alu_out_WB, mem_read_data_WB;
@@ -323,12 +319,9 @@ module CPU (
             commit_dmem_wd_r <= 32'b0;
         end
         else if (global_en && !stall) begin
-            // 处于 MEM 阶段的 store 指令的内存写入操作被推后到 WB 阶段实际执行，
-            // 以通过 Difftest 的内存数据比对，避免上一条执行指令在判定时错误认为内存发生非预期更改
-            // 此处的赋值接线在 MEM 段完成，在进入 WB 段的上升沿实际完成写入
-            commit_dmem_we_r <= mem_write_MEM && (|ctrl_we_mask_MEM);   // 当前指令是否在 MEM 段尝试进行内存写入（store 指令）
-            commit_dmem_wa_r <= (mem_read_MEM || mem_write_MEM) ? current_mem_addr : `DATA_MEM_START;
-            commit_dmem_wd_r <= (mem_write_MEM && (|ctrl_we_mask_MEM)) ? ctrl_wdata_MEM : 32'b0;
+            commit_dmem_we_r <= mem_write_MEM && (|ctrl_we_mask_MEM);
+            commit_dmem_wa_r <= (mem_read_MEM || mem_write_MEM) ? dmem_addr : `DATA_MEM_START;
+            commit_dmem_wd_r <= (mem_write_MEM && (|ctrl_we_mask_MEM)) ? dmem_wdata : 32'b0;
         end
     end
 
