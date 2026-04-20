@@ -20,7 +20,7 @@ module imm_gen (
 
             // B 型指令（BRANCH）
             7'b1100011:
-                imm = {{20{inst[31]}}, inst[7], inst[30:25], inst[11:8], 1'b0};
+                imm = {{19{inst[31]}}, inst[31], inst[7], inst[30:25], inst[11:8], 1'b0};
 
             // U 型指令（LUI / AUIPC）
             7'b0110111,     // LUI
@@ -29,7 +29,7 @@ module imm_gen (
 
             // J 型指令（JAL）
             7'b1101111:
-                imm = {{12{inst[31]}}, inst[19:12], inst[20], inst[30:21], 1'b0};
+                imm = {{11{inst[31]}}, inst[31], inst[19:12], inst[20], inst[30:21], 1'b0};
 
             // R 型指令无立即数
             default:
