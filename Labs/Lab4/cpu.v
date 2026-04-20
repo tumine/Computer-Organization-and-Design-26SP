@@ -414,8 +414,15 @@ module CPU (
                                  
     // ========================= Hazard Detection Unit =========================
     
+    // BRANCH 和 STORE 指令虽然 alu_src 信号标记为使用 PC/imm，
+    // 但它们仍需读取 rs1/rs2 的值（BRANCH 用于比较，STORE 的 rs2 用于写入数据）
+    wire is_branch_ID = (opcode_ID == 7'b1100011);
+    wire is_store_ID  = (opcode_ID == 7'b0100011);
+
     // 冒险检测：当前位于 EX(3) 阶段的指令将要读内存，且读出的值要存入的寄存器就是 ID(2) 阶段指令要读取的寄存器
-    wire load_use_hazard = mem_read_EX && (rd_EX != 5'd0) && (rd_EX == rs1_ID || rd_EX == rs2_ID);
+    wire load_use_hazard = mem_read_EX && (rd_EX != 5'd0) 
+                       && ((rd_EX == rs1_ID && (!alu_src_a_ID || is_branch_ID))
+                       ||  (rd_EX == rs2_ID && (!alu_src_b_ID || is_branch_ID || is_store_ID)));
     
     // 如果当前指令需要跳转（pc_sel_EX = 1），就需要刷新取错的指令
     wire control_hazard = pc_sel_EX;
