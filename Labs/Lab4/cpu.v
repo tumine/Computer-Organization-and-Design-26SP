@@ -382,7 +382,7 @@ module CPU (
     // ========================= Forwarding Unit =========================
     wire [1:0] forward_a;   // 00-寄存器堆，01-上一条指令的 ALU 计算结果，10-上两条指令的写回数据
     wire [1:0] forward_b;
-    wire [31:0] rf_wdata_MEM;
+    wire [31:0] rf_wdata_MEM;   // MEM 阶段可确定的对寄存器堆的写回值
 
     // 回顾 wb_sel：00-ALU 运算结果，01-访存结果，10-PC+4
     // 如果 wb_sel 选通 01，则需要通过 stall 信号停顿一拍再前递
