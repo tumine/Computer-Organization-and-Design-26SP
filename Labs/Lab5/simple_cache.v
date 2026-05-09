@@ -4,7 +4,7 @@
 - 块大小：4字（16字节 128位）
 - 采用写回写分配策略
 */
-module cache #(
+module cache_simple #(
     parameter INDEX_WIDTH       = 3,    // Cache索引位宽 2^3=8行
     parameter LINE_OFFSET_WIDTH = 2,    // 行偏移位宽，决定了一行的宽度 2^2=4字
     parameter SPACE_OFFSET      = 2,    // 一个地址空间占1个字节，因此一个字需要4个地址空间，由于假设为整字读取，处理地址的时候可以默认后两位为0
