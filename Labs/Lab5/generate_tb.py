@@ -55,7 +55,7 @@ mem= {} # 内存数据，地址为4对齐(即低2位为0), 数据为32位
 for i in range(1 << MEM_ADDR_WIDTH):
     mem[i] = randint(0, 2**WORD_WIDTH-1)
 
-with open('./src/mem_bram.v', 'w', encoding="utf-8") as f:
+with open('Labs/Lab5/mem_bram.v', 'w', encoding="utf-8") as f:
     f.write(mem_bram_head)
     # 根据LINE_OFFSET_WIDTH，将多个内存数据合并成一行
     for i in range(0, 1 << MEM_ADDR_WIDTH, 1 << LINE_OFFSET_WIDTH):
@@ -218,7 +218,7 @@ elif MODE == 1:
 # 打乱test_data顺序
 from random import shuffle
 shuffle(test_data)
-with open('./src/cache_tb.v', 'w', encoding="utf-8") as f:
+with open('Labs/Lab5/cache_tb.v', 'w', encoding="utf-8") as f:
     f.write(cache_tb_head)
     f.write("    //测试参数\n")
     f.write("    parameter READ_NUM = %d;  // 测试次数 这里设置为2000次读，1000次写\n" % READ_NUM)
