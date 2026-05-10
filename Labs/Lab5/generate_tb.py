@@ -108,6 +108,9 @@ cache_tb_body = '''
     reg [32:0] test_data[0:READ_NUM+WRITE_NUM-1];  // 用于存储测试数据 最高位用于标记是否写入 0：读 1：写
     reg [31:0] test_cnt=0;  // 用于计数，每次读写操作后加1
     reg [31:0] diff=0;  // 用于统计读取错误次数
+    reg [31:0] total_cycles=0; // 记录总的仿真周期数
+    reg [31:0] miss_cnt=0; // 记录发生miss的次数
+    reg last_miss=0;
 
     // 用于对比的提交，当前cache应该给出的数据
     wire op;
@@ -120,6 +123,15 @@ cache_tb_body = '''
     assign r_req = test_data[test_cnt][32] == 0 ? 1 : 0;
     assign w_req = test_data[test_cnt][32] == 1 ? 1 : 0;
     assign w_data = test_data[test_cnt][31:0];
+
+    always @(posedge clk) begin
+        if (stat && test_cnt < READ_NUM+WRITE_NUM) begin
+            total_cycles <= total_cycles + 1;
+            last_miss <= miss;
+            if (miss && !last_miss) miss_cnt <= miss_cnt + 1;
+        end
+    end
+
     always @(posedge clk) begin
         // 放宽到 <= 总数，给最后一次数据校验留出时间
         if (!miss && (test_cnt <= READ_NUM+WRITE_NUM) && stat) begin
@@ -138,6 +150,7 @@ cache_tb_body = '''
             else begin
                 // 测试结束收尾
                 $display("Simulation Finished! Total errors = %d", diff);
+                $display("Total Cycles = %d, Miss Count = %d", total_cycles, miss_cnt);
                 $finish;
             end
         end
