@@ -107,7 +107,7 @@ cache_tb_body = '''
     reg [MEM_ADDR_WIDTH-1:0] test_addr[0:READ_NUM+WRITE_NUM-1];  // 用于存储测试地址
     reg [32:0] test_data[0:READ_NUM+WRITE_NUM-1];  // 用于存储测试数据 最高位用于标记是否写入 0：读 1：写
     reg [31:0] test_cnt=0;  // 用于计数，每次读写操作后加1
-    reg diff=0;  // 用于标记是否有不一致的数据
+    reg [31:0] diff=0;  // 用于统计读取错误次数
 
     // 用于对比的提交，当前cache应该给出的数据
     wire op;
@@ -121,14 +121,25 @@ cache_tb_body = '''
     assign w_req = test_data[test_cnt][32] == 1 ? 1 : 0;
     assign w_data = test_data[test_cnt][31:0];
     always @(posedge clk) begin
-        if (!miss && (test_cnt < READ_NUM+WRITE_NUM) && stat) begin
-            if (test_data[test_cnt-1][32] == 0) begin  // 读
+        // 放宽到 <= 总数，给最后一次数据校验留出时间
+        if (!miss && (test_cnt <= READ_NUM+WRITE_NUM) && stat) begin
+            // 加一个 >0 断言，避免 test_cnt=0 时的向下越界
+            if (test_cnt > 0 && test_data[test_cnt-1][32] == 0) begin  // 读
                 if (r_data != test_data[test_cnt-1][31:0]) begin
-                    $display("Read error at %d, expect %h, get %h", test_cnt, test_data[test_cnt-1][31:0], r_data);
-                    diff = 1;
+                    $display("Read error at %d, expect %h, get %h", test_cnt-1, test_data[test_cnt-1][31:0], r_data);
+                    diff <= diff + 1;
                 end
             end
-            test_cnt <= test_cnt + 1;
+            
+            // 只有当前未发完才继续增加计数器
+            if (test_cnt < READ_NUM+WRITE_NUM) begin
+                test_cnt <= test_cnt + 1;
+            end
+            else begin
+                // 测试结束收尾
+                $display("Simulation Finished! Total errors = %d", diff);
+                $finish;
+            end
         end
     end
 
