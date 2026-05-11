@@ -3,10 +3,10 @@
 # 生成的cache_tb.v文件主要是模拟CPU对cache的读写操作，用于验证cache的正确性
 
 # 定义一些仿真文件参数
-MODE = 1 # 0:随机读写 1：模拟CPU伪顺序读写（会有不定期跳转，概率为BranchP）
+MODE = 2 # 0:随机读写 1:模拟CPU伪顺序读写 2:具有局部性和阶段切换的工作集模式(贴近真实CPU)
 BranchP = 0.1 # 跳转概率，仅在MODE=1时有效，当BranchP = 0时，为顺序读写不会跳转
-READ_NUM   = 2000 # 读取次数
-WRITE_NUM  = 1000 # 写入次数
+READ_NUM   = 3000 # 读取次数
+WRITE_NUM  = 3000 # 写入次数
 
 # 内存参数
 WORD_WIDTH = 32 # 内存数据宽度
@@ -16,8 +16,8 @@ DATA_WIDTH = 128 # 一行数据宽度
 INDEX_WIDTH = 3
 LINE_OFFSET_WIDTH = 2
 SPACE_OFFSET = 2
-MEM_ADDR_WIDTH = 10
-WAY_NUM = 1
+MEM_ADDR_WIDTH = 14
+WAY_NUM = 4
 REPLACE_POLICY = 0 # 替换策略：0-LRU, 1-FIFO, 2-Random, 3-LFU
 # 生成mem_bram.v文件
 from random import randint
@@ -233,6 +233,27 @@ elif MODE == 1:
             test_addr.append(test_addr[i-1] + 1)
         # 确保地址不超过内存范围
         test_addr[i] = test_addr[i] % (2**MEM_ADDR_WIDTH)
+elif MODE == 2:
+    test_addr = []
+    # 真实CPU特征模拟参数
+    WORKING_SET_SIZE = 48  # 工作集规模（约占Cache总容量128字的近一半），产生高重复使用率
+    HOT_PROB = 85          # 85%概率命中工作集，15%概率成为全局随机噪声（破坏FIFO和LRU的冲突）
+    PHASE_LINES = 600      # 每经历若干周期后进行阶段切换（Phase Change，用来惩罚无衰减的LFU）
+    
+    base_addr = randint(0, 2**MEM_ADDR_WIDTH-1)
+    for i in range(READ_NUM + WRITE_NUM):
+        # 阶段切换：模拟程序从一个函数/循环退出，转入全新的运行内存区域
+        if i > 0 and i % PHASE_LINES == 0:
+            base_addr = randint(0, 2**MEM_ADDR_WIDTH-1)
+        
+        # 以较高概率访问工作集内的空间局部数据（时间局部性与空间局部性的结合）
+        if randint(0, 99) < HOT_PROB:
+            addr = base_addr + randint(0, WORKING_SET_SIZE - 1)
+        else:
+            # 伴随低概率全局随机访问，模拟操作系统中断或不相干指针的干扰
+            addr = randint(0, 2**MEM_ADDR_WIDTH-1)
+            
+        test_addr.append(addr % (2**MEM_ADDR_WIDTH))
 
 # debug
 # print(test_addr)
