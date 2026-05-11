@@ -9,7 +9,8 @@ module cache #(
     parameter INDEX_WIDTH       = 3,    // Cache 的索引组数，2^(INDEX_WIDTH)
     parameter WAY_NUM           = 2,    // 每个 Cache 索引组包含的 Way 数，2^(WAY_NUM)
     parameter LINE_OFFSET_WIDTH = 2,    // 一个 Way 包含的字数，2^(LINE_OFFSET_WIDTH)
-    parameter SPACE_OFFSET      = 2
+    parameter SPACE_OFFSET      = 2,
+    parameter REPLACE_POLICY    = 0     // 替换策略：0-LRU, 1-FIFO, 2-Random, 3-LFU
 )(
     input                     clk,    
     input                     rstn,
@@ -24,8 +25,8 @@ module cache #(
     output reg                     mem_r,       // 向内存发出读请求
     output reg                     mem_w,       // 向内存发出写请求
     output reg [31:0]              mem_addr,    // 所发出的内存操作地址
-    output reg [127:0]             mem_w_data,  // 内存写数据（128位即是一整个Cache Line 一次写一行）
-    input      [127:0]             mem_r_data,  // 内存读数据（一次读一行）
+    output reg [127:0]             mem_w_data,  // 内存写数据
+    input      [127:0]             mem_r_data,  // 内存读数据
     input                          mem_ready    // 内存就绪信号，同时指示内存读取完成或内存写入完成
 );
 
@@ -234,62 +235,113 @@ module cache #(
     end
 
     // ==========================================
-    // LRU 替换策略变量：年龄、待替换 Way 编号
+    // 替换策略变量及其更新逻辑
     // ==========================================
-    // 基本思路：每一个 Cache Set 中的 Way 与其年龄之间是双射关系，通过二维数组 lru_age 表示
-    // 发生 Cache Miss 时，选取年龄最大（WAY_NUM-1）的 Way 作为替换对象
-    // 当由于 Refill 或 Cache Hit 导致有一个 Way 的年龄重置为 0 时，
-    // 原来所有比该 Way 年龄更小的 Way 发生 aging，而年龄更大的 Way 年龄保持不变
-    reg [WAY_NUM_WIDTH-1:0] lru_age [0:SET_NUM-1][0:WAY_NUM-1];
     reg [WAY_NUM_WIDTH-1:0] replace_way;   // 将要执行 Refill 的 Way 编号
     
-    // 确定年龄最大的 Way
+    // --- 0: LRU ---
+    reg [WAY_NUM_WIDTH-1:0] lru_age [0:SET_NUM-1][0:WAY_NUM-1];
+
+    // --- 1: FIFO ---
+    reg [WAY_NUM_WIDTH-1:0] fifo_ptr [0:SET_NUM-1];
+
+    // --- 2: Random ---
+    reg [WAY_NUM_WIDTH-1:0] rand_ptr;       // 对于在任意 Set 上将要发生的 Cache Line 替换操作，选择 Set 内编号为 rand_ptr 的 Way 换出
+
+    // --- 3: LFU ---
+    reg [7:0] lfu_cnt [0:SET_NUM-1][0:WAY_NUM-1];
+
+    // 根据传入模块的替换策略参数确定 replace_way
     always @(*) begin
         replace_way = 0;
-        for (j = 0; j < WAY_NUM; j = j + 1) begin
-            if (lru_age[w_index][j] == WAY_NUM - 1) begin
-                replace_way = j[WAY_NUM_WIDTH-1:0];
+        if (REPLACE_POLICY == 0) begin // LRU
+            // 选出指定 Set 中 age 最大的 Way
+            for (j = 0; j < WAY_NUM; j = j + 1) begin
+                if (lru_age[w_index][j] == WAY_NUM - 1) begin
+                    replace_way = j[WAY_NUM_WIDTH-1:0];
+                end
+            end
+        end
+        else if (REPLACE_POLICY == 1) begin // FIFO
+            // 选出指定 Set 内队首的 Way
+            replace_way = fifo_ptr[w_index];
+        end
+        else if (REPLACE_POLICY == 2) begin // Random
+            // rand_ptr 适用于任意的 Set
+            replace_way = rand_ptr;
+        end
+        else if (REPLACE_POLICY == 3) begin // LFU
+            // 选出指定 Set 中 lfu_cnt 最小的 Way
+            begin : find_min_lfu
+                reg [7:0] min_lfu;
+                integer w;
+                min_lfu = 8'hFF;
+                replace_way = 0;
+                for (w = 0; w < WAY_NUM; w = w + 1) begin
+                    if (lfu_cnt[w_index][w] <= min_lfu) begin
+                        min_lfu = lfu_cnt[w_index][w];
+                        replace_way = w[WAY_NUM_WIDTH-1:0];
+                    end
+                end
             end
         end
     end
 
-    // ==========================================
-    // LRU 年龄更新
-    // ==========================================
-    wire lru_update;
-    assign lru_update = hit | refill;   // 执行 aging 操作信号
-    wire [WAY_NUM_WIDTH-1:0] way_to_update = hit ? hit_way_id : replace_way;
-
     always @(posedge clk or negedge rstn) begin
-        if (!rstn) begin : lru_reset_blk
+        if (!rstn) begin : replace_reset_blk
+            // 各种策略的统计指标重置
             integer s, w;
+            rand_ptr <= 0;              // 随机替换策略的 Way 指针重置指向 0 号 Way
             for (s = 0; s < SET_NUM; s = s + 1) begin
+                fifo_ptr[s] <= 0;       // 每个 Set 内的队首 Way 指向 0 号 Way
                 for (w = 0; w < WAY_NUM; w = w + 1) begin
-                    // 在初始化时需要注意把所有 Way 的年龄错开，保证 Cache 正常工作时 Way 与年龄始终是双射关系
-                    // 这里采用将编号为 i 的 Way 年龄初始化为 i 的策略
-                    lru_age[s][w] <= w;
+                    lru_age[s][w] <= w; // LRU 初始年龄错开
+                    lfu_cnt[s][w] <= 0; // LFU 计数器归零
                 end
             end
         end
-        // 在检索 Cache 的过程中发生 Cache Hit，更新年龄数据
-        else if ((current_state == READ || current_state == WRITE) && hit) begin : lru_hit_blk
-            // 发生 Hit 的 Way 年龄置 0，原先年龄比它小的 Way 的年龄均加 1，原先年龄更大的 Way 年龄不变
-            integer w;
-            for (w = 0; w < WAY_NUM; w = w + 1) begin
-                if (lru_age[w_index][w] < lru_age[w_index][hit_way_id]) begin
-                    lru_age[w_index][w] <= lru_age[w_index][w] + 1;
+        else begin
+            // 各种替换策略的统计指标更新逻辑
+            // 在检索 Cache 的过程中发生 Cache Hit
+            if ((current_state == READ || current_state == WRITE) && hit) begin 
+                if (REPLACE_POLICY == 0) begin : lru_hit_update // LRU Hit
+                    integer w;
+                    for (w = 0; w < WAY_NUM; w = w + 1) begin   // 所有 age 更小的 Way 的年龄都增加 1
+                        if (lru_age[w_index][w] < lru_age[w_index][hit_way_id]) begin
+                            lru_age[w_index][w] <= lru_age[w_index][w] + 1;
+                        end
+                    end
+                    lru_age[w_index][hit_way_id] <= 0;          // 刚访问过的 Way 的年龄归零
+                end
+                else if (REPLACE_POLICY == 3) begin // LFU Hit
+                    // 对于发生 Hit 的 Way，增加其总 Hit 次数直到到达上界 8'hFF
+                    if (lfu_cnt[w_index][hit_way_id] < 8'hFF) begin
+                        lfu_cnt[w_index][hit_way_id] <= lfu_cnt[w_index][hit_way_id] + 1;
+                    end
                 end
             end
-            lru_age[w_index][hit_way_id] <= 0;
-        end
-        // Refill 过程引入新的 Cache Line，更新年龄数据
-        else if (current_state == IDLE && refill) begin : lru_refill_blk
-            // 新 Cache Line 所在 Way 的年龄置 0，其余所有 Way 年龄加 1
-            integer w;
-            for (w = 0; w < WAY_NUM; w = w + 1) begin
-                lru_age[w_index][w] <= lru_age[w_index][w] + 1;
+            // Refill 过程引入新的 Cache Line，同时更新各个替换策略的相关统计指标
+            else if (current_state == IDLE && refill) begin 
+                if (REPLACE_POLICY == 0) begin : lru_refill_update // LRU Refill
+                    // 未被换出的 Way 的年龄全部加 1，新换入的 Way 年龄为 0
+                    integer w;
+                    for (w = 0; w < WAY_NUM; w = w + 1) begin
+                        lru_age[w_index][w] <= lru_age[w_index][w] + 1;
+                    end
+                    lru_age[w_index][replace_way] <= 0;
+                end
+                else if (REPLACE_POLICY == 1) begin // FIFO Refill
+                    // 队首的 Way 变为已被换出 Way 的后继
+                    fifo_ptr[w_index] <= fifo_ptr[w_index] + 1;
+                end
+                else if (REPLACE_POLICY == 2) begin // Random Refill
+                    // 在发生一次 Cache Line 替换时，更新 rand_ptr 指针
+                    rand_ptr <= rand_ptr + 1;
+                end
+                else if (REPLACE_POLICY == 3) begin // LFU Refill
+                    lfu_cnt[w_index][replace_way] <= 1; // 新填入的 Cache Line 访问次数为 1
+                end
             end
-            lru_age[w_index][replace_way] <= 0;
         end
     end
 
