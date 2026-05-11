@@ -161,7 +161,6 @@ cache_tb_body = '''
     cache #(
         .INDEX_WIDTH(INDEX_WIDTH),
         .LINE_OFFSET_WIDTH(LINE_OFFSET_WIDTH),
-        .SPACE_OFFSET(SPACE_OFFSET),
         .WAY_NUM(WAY_NUM),
         .REPLACE_POLICY(REPLACE_POLICY)
     ) cache_inst(
@@ -247,13 +246,13 @@ shuffle(test_data)
 with open('Labs/Lab5/cache_tb.v', 'w', encoding="utf-8") as f:
     f.write(cache_tb_head)
     f.write("    //测试参数\n")
-    f.write("    parameter READ_NUM = %d;  // 测试次数 这里设置为2000次读，1000次写\n" % READ_NUM)
+    f.write("    parameter READ_NUM = %d;  // 测试次数 这里设置为%d次读，%d次写\n" % (READ_NUM, READ_NUM, WRITE_NUM))
     f.write("    parameter WRITE_NUM = %d;  \n" % WRITE_NUM)
     f.write("    //模块参数\n")
-    f.write("    parameter INDEX_WIDTH       = %d;   // Cache索引位宽 2^3=8行\n" % INDEX_WIDTH)
-    f.write("    parameter LINE_OFFSET_WIDTH = %d;   // 行偏移位宽，决定了一行的宽度 2^2=4字\n" % LINE_OFFSET_WIDTH)
+    f.write("    parameter INDEX_WIDTH       = %d;   // Cache索引位宽 2^%d=%d行\n" % (INDEX_WIDTH, INDEX_WIDTH, 2**INDEX_WIDTH))
+    f.write("    parameter LINE_OFFSET_WIDTH = %d;   // 行偏移位宽，决定了一行的宽度 2^%d=%d字\n" % (LINE_OFFSET_WIDTH, LINE_OFFSET_WIDTH, 2**LINE_OFFSET_WIDTH))
     f.write("    parameter SPACE_OFFSET      = %d;   // 一个地址空间占1个字节，因此一个字需要4个地址空间，由于假设为整字读取，处理地址的时候可以默认后两位为0\n" % SPACE_OFFSET)
-    f.write("    parameter MEM_ADDR_WIDTH    = %d;   // 为了简化，这里假设内存地址宽度为10位（CPU请求地址仍然是32位，只不过我们这里简化处理，截断了高位） \n" % MEM_ADDR_WIDTH)
+    f.write("    parameter MEM_ADDR_WIDTH    = %d;   // 内存地址宽度为%d位（CPU请求地址仍然是32位，只不过我们这里简化处理，截断了高位） \n" % (MEM_ADDR_WIDTH, MEM_ADDR_WIDTH))
     f.write("    parameter WAY_NUM           = %d;   // Cache N路组相联(N=1的时候是直接映射)\n" % WAY_NUM)
     f.write("    parameter REPLACE_POLICY    = %d;   // Cache替换策略(0:LRU, 1:FIFO, 2:Random, 3:LFU)\n" % REPLACE_POLICY)
     f.write(cache_tb_body)

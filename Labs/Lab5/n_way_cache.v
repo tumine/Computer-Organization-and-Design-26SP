@@ -5,11 +5,10 @@
 
 module cache #(
     parameter ADDR_WIDTH        = 32,   // 物理地址位宽
-    parameter DATA_WIDTH        = 32,   // 数据位宽
+    parameter DATA_WIDTH        = 32,   // 一个字的位宽，有多少 bits
     parameter INDEX_WIDTH       = 3,    // Cache 的索引组数，2^(INDEX_WIDTH)
     parameter WAY_NUM           = 2,    // 每个 Cache 索引组包含的 Way 数，2^(WAY_NUM)
     parameter LINE_OFFSET_WIDTH = 2,    // 一个 Way 包含的字数，2^(LINE_OFFSET_WIDTH)
-    parameter SPACE_OFFSET      = 2,
     parameter REPLACE_POLICY    = 0     // 替换策略：0-LRU, 1-FIFO, 2-Random, 3-LFU
 )(
     input                     clk,    
@@ -51,7 +50,8 @@ module cache #(
         LINE_WIDTH      = DATA_WIDTH << LINE_OFFSET_WIDTH,                                  // 一行数据段的总位宽
         TAG_WIDTH       = ADDR_WIDTH - INDEX_WIDTH - LINE_OFFSET_WIDTH - SPACE_OFFSET,      // Tag 位宽（总位宽扣除 Index、字节偏移和字偏移）
         SET_NUM         = 1 << INDEX_WIDTH,                                                 // 一共有多少个 Cache 组（Set）
-        WAY_NUM_WIDTH   = WAY_NUM > 1 ? clog2(WAY_NUM) : 1;                                 // 每个 Cache 组中的所有 Way 需要通过几个 bit 索引
+        WAY_NUM_WIDTH   = WAY_NUM > 1 ? clog2(WAY_NUM) : 1,                                 // 每个 Cache 组中的所有 Way 需要通过几个 bit 索引
+        SPACE_OFFSET    = clog2(DATA_WIDTH / 8);                                            // 地址低位偏移量：为保证整字读取，需要维持低几位始终为 0
     
     // ==========================================
     // 流水请求与缓冲寄存器
