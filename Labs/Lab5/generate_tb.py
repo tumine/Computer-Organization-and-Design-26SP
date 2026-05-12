@@ -5,6 +5,11 @@
 # 定义一些仿真文件参数
 MODE = 2 # 0:随机读写 1:模拟CPU伪顺序读写 2:具有局部性和阶段切换的工作集模式(贴近真实CPU)
 BranchP = 0.1 # 跳转概率，仅在MODE=1时有效，当BranchP = 0时，为顺序读写不会跳转
+# 真实CPU特征模拟参数，仅对于 MODE=2 有效
+WORKING_SET_SIZE = 48  # 工作集占内存空间的字数
+HOT_PROB = 85          # 以HOT_PROB概率命中工作集，其余概率成为全局随机噪声
+PHASE_LINES = 600      # 每经历若干周期后进行阶段切换（Phase Change）
+
 READ_NUM   = 3000 # 读取次数
 WRITE_NUM  = 3000 # 写入次数
 
@@ -235,10 +240,6 @@ elif MODE == 1:
         test_addr[i] = test_addr[i] % (2**MEM_ADDR_WIDTH)
 elif MODE == 2:
     test_addr = []
-    # 真实CPU特征模拟参数
-    WORKING_SET_SIZE = 48  # 工作集规模（约占Cache总容量128字的近一半），产生高重复使用率
-    HOT_PROB = 85          # 85%概率命中工作集，15%概率成为全局随机噪声（破坏FIFO和LRU的冲突）
-    PHASE_LINES = 600      # 每经历若干周期后进行阶段切换（Phase Change，用来惩罚无衰减的LFU）
     
     base_addr = randint(0, 2**MEM_ADDR_WIDTH-1)
     for i in range(READ_NUM + WRITE_NUM):
