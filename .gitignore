@@ -31,6 +31,9 @@ bin/
 *.o
 *.pdb
 
+# Markdown PDF temp files
+*_tmp.html
+
 # Lab 5 auxiliary files
 Labs/Lab5/cache_tb.v
 Labs/Lab5/mem_bram.v
