@@ -105,7 +105,7 @@ module cache #(
     reg refill;                         // Refill 就绪信号
 
     // ==========================================
-    // 状态机和切换逻辑
+    // 状态机定义
     // ==========================================
     localparam 
         // 等待 CPU 请求；如果 refill=1（上一次 Cache Miss），则把 ret_buf 写入 Data BRAM 和 Tag BRAM；如果上一次进行写访存，就设置 dirty 位
@@ -205,7 +205,6 @@ module cache #(
     // 全体命中判断与归并
     // ==========================================
 
-    
     // 使用一个固定位宽的 hit_vec 进行缓冲，避免在综合仿真时出现位宽推导异常
     wire [15 : 0] hit_vec;         // Cache Hit 状态向量，hit_vec[i] 指示第 i 个 Way 是否 Cache Hit
     generate
@@ -346,15 +345,12 @@ module cache #(
     end
 
     // ==========================================
-    // 写访存和换出
+    // 换出
     // ==========================================
-    // 目标 Way 上的 Cache Line 数据
-    // 对于 Cache Hit 情形，curr_r_line 作为写访存指令的修改基底；
-    // 对于 Cache Miss 情形，curr_r_line 保存将被覆写的 Cache Line 数据
-    wire [LINE_WIDTH-1:0] curr_r_line = r_line[hit ? hit_way_id : replace_way];
+
     // 换出操作相关数据和信号
     wire curr_dirty = dirty[replace_way];                   // 将被替换的 Way 的 dirty 指示
-    wire [TAG_WIDTH-1:0] curr_r_tag = r_tag[replace_way];   // 将被替换的 Way 的 Tag 数据
+    wire [TAG_WIDTH-1:0] curr_r_tag = r_tag[replace_way];   // 将被替换的 Way 的 Tag 段
 
     // 换出目标内存地址，从该地址开始向内存写入完整的换出 Cache Line
     wire [31:0] dirty_mem_addr = {curr_r_tag, w_index} << (LINE_OFFSET_WIDTH+SPACE_OFFSET);
@@ -378,6 +374,9 @@ module cache #(
     // ==========================================
     // 向 Cache 中写入新 Cache Line
     // ==========================================
+
+    // 在 Cache Hit 情形下，目标 Way 上的 Cache Line 数据，作为写访存指令的修改基底
+    wire [LINE_WIDTH-1:0] curr_r_line = r_line[hit_way_id];
     assign w_line_mask = 32'hFFFFFFFF << (word_offset*32);   // 写掩码，只修改目标内存地址上的数据
     assign w_data_line = w_data_buf << (word_offset*32);     // 将新数据移位对齐
     
@@ -388,6 +387,7 @@ module cache #(
     // ==========================================
     // 回读数据取字逻辑
     // ==========================================
+
     // 从 Cache 和内存读出结果中分别截取指定字
     always @(*) begin
         if (word_offset < (1 << LINE_OFFSET_WIDTH)) begin   // 检查 word_offset 是否合法
