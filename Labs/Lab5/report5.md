@@ -1,3 +1,17 @@
+## 目录
+- [N 路组相连 Cache 相比直接映射 Cache 的改动](#n-路组相连-cache-相比直接映射-cache-的改动)
+- [Cache 工作流程与状态机转移逻辑](#cache-工作流程与状态机转移逻辑)
+- [Cache 结构设计](#cache-结构设计)
+- [替换策略分析](#替换策略分析)
+
+---
+
+### N 路组相连 Cache 相比直接映射 Cache 的改动
+- Tag/Data BRAM 由固定例化 1 对改为通过 `generate` 块例化 N 对；基于 Way 数量的模块内数据线和寄存器都需要相应扩为 N 条
+- Cache Hit 的判断逻辑由单 Way 的 Hit 信号直接连出改为综合所有 Way 的 Hit 信号进行按位或得到全局的 Hit 信号
+- 直接映射 Cache 由于每个 Cache Set 中只有一个 Way，因此发生 Cache Miss 时不需要使用替换策略；而 N 路组相连 Cache 需要采用一个特定的替换策略选择在发生 Cache Miss 时需要替换哪一个 Way，并且 Cache 的性能会**受到选用的替换策略的影响**
+- 值得注意的是，即使在直接映射 Cache 中，由于 **Cache Set 的定位只依靠 Index 段**，仍然需要通过 Tag BRAM 来判定当前 Way 上存储的数据是否是目标访存地址上的数据（**比较 Tag BRAM 数据与访存地址的 Tag 段**）
+
 ### Cache 工作流程与状态机转移逻辑
 
 Cache 模块采用写回写分配（Write-back & Write-allocate）策略，使用五状态的状态机控制 Cache 的工作流，配合缓冲寄存器和控制信号完成访存请求和必要的主存数据同步。状态机及详细工作细节如下：
@@ -141,7 +155,6 @@ end
 4. **`W_DIRTY` 状态转移方向**：
    - 若内存就绪（数据成功写入），则跳转到 `MISS` 状态执行换入操作
    - 若内存仍未就绪，则保持 `W_DIRTY` 状态
-
 ```Verilog
 case(current_state)
     IDLE: begin
