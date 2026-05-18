@@ -15,19 +15,26 @@ module CPU (
     input                   [ 0 : 0]            clk,
     input                   [ 0 : 0]            rst,
     input                   [ 0 : 0]            global_en,
-    input                   [ 0 : 0]            cache_flush,
 
 /* ------------------------------ Memory (inst) ----------------------------- */
     output                  [31 : 0]            imem_raddr,
     input                   [31 : 0]            imem_rdata,
 
-/* -------------------------- Memory (data cache) -------------------------- */
-    output                  [ 0 : 0]            dmem_mem_r,
-    output                  [ 0 : 0]            dmem_mem_w,
-    output                  [31 : 0]            dmem_mem_addr,
-    output                  [127: 0]            dmem_mem_wdata,
-    input                   [127: 0]            dmem_mem_rdata,
-    input                   [ 0 : 0]            dmem_mem_ready,
+/* ------------------------------ Memory (data) ----------------------------- */
+    output                  [ 0 : 0]            mem_r,
+    output                  [ 0 : 0]            mem_w,
+    output                  [31 : 0]            mem_addr,
+    output                  [127: 0]            mem_w_data,
+    input                   [127: 0]            mem_r_data,
+    input                   [ 0 : 0]            mem_ready,
+
+/* -------------------------- Branch Predictor Interface -------------------- */
+    // 预留分支预测输入信号：在 IF 段预测的下个 PC 和是否跳转
+    input                   [31 : 0]            pred_pc,
+    input                   [ 0 : 0]            pred_taken,
+    // 预留分支预测更新输出信号：在 EX 段确定的真实跳转信息，用于更新预测器
+    output                  [ 0 : 0]            branch_actual_taken,
+    output                  [31 : 0]            branch_actual_target,
 
 /* ---------------------------------- Debug --------------------------------- */
     output                  [ 0 : 0]            commit,
@@ -44,56 +51,57 @@ module CPU (
     input                   [ 4 : 0]            debug_reg_ra,
     output                  [31 : 0]            debug_reg_rd
 );
-    // 五级流水线：IF -> ID -> EX -> MEM -> WB。
-    // 本文件的主要改动是让 MEM 阶段经由数据 Cache 访问后端 DMEM，
-    // 并把 Cache ready 转换成全流水线冻结信号，保证 miss 等待期间所有段寄存器保持不变。
-
-    wire dcache_wait;
-    wire pc_stall;
-    wire if_id_stall;
-    wire if_id_flush;
-    wire id_ex_stall;
-    wire id_ex_flush;
-    wire ex_mem_stall;
-    wire mem_wb_stall;
-    wire commit_advance;
+    // 5 级流水线：IF-ID-EX-MEM-WB
 
     // ========================= IF Stage =========================
+    // 本阶段主要根据 PC 取指，计算下一条连续指令的地址 PC + 4
+    // 产生的主要信号和数据：当前 PC pc_IF，指令内存访存地址 imem_raddr，读取出的指令 inst_IF，PC+4 pc_plus_4_IF
     wire [31:0] next_pc;
     wire [31:0] pc_IF;
 
     reg [31:0] pc_reg;
+    // [中文注释] PC更新：除了受预测、实际跳转结果影响外，也受到全局停顿(pc_en)的控制
     always @(posedge clk) begin
         if (rst) begin
             pc_reg <= `INSTR_MEM_START;
         end
-        else if (global_en && !pc_stall) begin
-            // Cache miss 或 load-use 冒险时保持 PC，不发出新的取指地址。
+        else if (global_en && pc_en) begin
             pc_reg <= next_pc;
         end
     end
-
     assign pc_IF = pc_reg;
     assign imem_raddr = pc_IF;
 
-    wire        imem_out_bounds = (pc_IF < `INSTR_MEM_START)
-                               || (pc_IF >= `INSTR_MEM_START + (1 << (`INSTR_MEM_DEPTH + 2)));
-    wire [31:0] inst_IF = imem_out_bounds ? 32'h00000013 : imem_rdata; // 越界取指时执行 NOP(addi x0,x0,0)
-    wire [31:0] pc_plus_4_IF = pc_IF + 32'd4;
+    wire        mem_out_bounds = (pc_IF < `INSTR_MEM_START)
+                              || (pc_IF >= `INSTR_MEM_START + (1 << (`INSTR_MEM_DEPTH + 2)));
+    wire [31:0] inst_IF = mem_out_bounds ? 32'h13 : imem_rdata; // PC 越界，执行 NOP
+    wire [31:0] pc_plus_4_IF = pc_IF + 4;
+    
+    // [中文注释] 分支预测在 IF 阶段根据预测结果决定下一个周期的 pc
+    // 当在 EX 段发现预测错误时分支冲刷(branch_mispredict)，应纠正 next_pc 为真实的正确地址
+    assign next_pc = branch_mispredict ? branch_actual_target : 
+                     (pred_taken ? pred_pc : pc_plus_4_IF);
+                     
     wire        commit_IF = 1'b1;
 
     // ========================= IF/ID Pipeline Register =========================
     wire [31:0] pc_ID, inst_ID, pc_plus_4_ID;
     wire        commit_ID;
+    // [中文注释] 预留分支预测的流水线信号：在 IF 到 ID 段传递预测结果
+    wire        pred_taken_ID;
+    wire [31:0] pred_pc_ID;
 
+    // [中文注释] if_id_reg 受 if_id_en 控制是否写入新数据（Cache/Load-Use 停顿时 if_id_en = 0）
     seg_reg if_id_reg (
-        .clk(clk), .rst(rst), .en(global_en), .stall(if_id_stall), .flush(if_id_flush),
+        .clk(clk), .rst(rst), .en(global_en & if_id_en), .flush(if_id_flush),
         .pc_in(pc_IF), .inst_in(inst_IF), .pc_plus_4_in(pc_plus_4_IF), .commit_in(commit_IF),
+        .pred_taken_in(pred_taken), .pred_pc_in(pred_pc),
         .pc_out(pc_ID), .inst_out(inst_ID), .pc_plus_4_out(pc_plus_4_ID), .commit_out(commit_ID),
+        .pred_taken_out(pred_taken_ID), .pred_pc_out(pred_pc_ID),
         // unused signals
         .rs1_in(5'b0), .rs2_in(5'b0), .rd_in(5'b0), .imm_in(32'b0), .rf_rdata1_in(32'b0), .rf_rdata2_in(32'b0),
         .pc_sel_in(1'b0), .rf_we_in(1'b0), .wb_sel_in(2'b0), .alu_src_a_in(1'b0), .alu_src_b_in(1'b0),
-        .alu_op_in(4'b0), .cmp_op_in(3'b0), .mem_write_in(1'b0), .mem_read_in(1'b0), .is_jalr_in(1'b0), .halt_in(1'b0),
+        .alu_op_in(5'b0), .cmp_op_in(3'b0), .mem_write_in(1'b0), .mem_read_in(1'b0), .is_jalr_in(1'b0), .halt_in(1'b0),
         .opcode_in(7'b0), .funct3_in(3'b0), .funct7_in(7'b0), .cmp_res_in(1'b0), .alu_out_in(32'b0), .mem_read_data_in(32'b0),
         .rs1_out(), .rs2_out(), .rd_out(), .imm_out(), .rf_rdata1_out(), .rf_rdata2_out(),
         .pc_sel_out(), .rf_we_out(), .wb_sel_out(), .alu_src_a_out(), .alu_src_b_out(),
@@ -102,6 +110,8 @@ module CPU (
     );
 
     // ========================= ID Stage =========================
+    // 本阶段主要对指令进行译码，读取寄存器堆，生成立即数
+    // 产生的主要信号和数据：寄存器索引 rs1/rs2/rd_ID，立即数 imm_ID，寄存器读出的数据 rf_rdata1/2_ID，译码器输出的控制信号
     wire [4:0]  rs1_ID     = inst_ID[19:15];
     wire [4:0]  rs2_ID     = inst_ID[24:20];
     wire [4:0]  rd_ID      = inst_ID[11:7];
@@ -111,16 +121,17 @@ module CPU (
     wire [31:0] imm_ID;
 
     wire [31:0] rf_rdata1_ID, rf_rdata2_ID;
+
     wire [31:0] forwarded_rf_rdata1_ID, forwarded_rf_rdata2_ID;
 
+    // 来自 WB 阶段的写回信号
     wire        rf_we_WB;
     wire [4:0]  rd_WB;
     wire [31:0] rf_wdata_WB;
 
     regfile u_regfile (
         .clk        (clk),
-        // Cache 等待期间 WB 段保持不变，写使能也必须冻结，否则同一条指令会重复写寄存器堆。
-        .we         (rf_we_WB && global_en && !dcache_wait),
+        .we         (rf_we_WB && global_en),
         .rs1        (rs1_ID),
         .rs2        (rs2_ID),
         .rd         (rd_WB),
@@ -136,18 +147,19 @@ module CPU (
         .imm        (imm_ID)
     );
 
+    // 译码器输出控制信号
     wire        rf_we_ID;
     wire [1:0]  wb_sel_ID;
     wire        alu_src_a_ID;
     wire        alu_src_b_ID;
-    // RV32M 裁剪后 ALU 仅保留 RV32I 基础操作，4 位控制码即可覆盖，减少流水线控制位宽。
-    wire [3:0]  alu_op_ID;
+    wire [4:0]  alu_op_ID;
     wire [2:0]  cmp_op_ID;
     wire        mem_write_ID;
     wire        mem_read_ID;
     wire        is_jalr_ID;
     wire        halt_ID;
 
+    // 分支判断结果 cmp_res 尚未产生，传递给译码器的 cmp_res 为 0
     decoder u_decoder (
         .opcode     (opcode_ID),
         .funct3     (funct3_ID),
@@ -174,43 +186,55 @@ module CPU (
     wire [31:0] imm_EX, rf_rdata1_EX, rf_rdata2_EX;
     wire        rf_we_EX, alu_src_a_EX, alu_src_b_EX, mem_write_EX, mem_read_EX, is_jalr_EX, halt_EX;
     wire [1:0]  wb_sel_EX;
-    wire [3:0]  alu_op_EX;
+    wire [4:0]  alu_op_EX;
     wire [2:0]  cmp_op_EX;
     wire [6:0]  opcode_EX;
     wire [2:0]  funct3_EX;
     wire [6:0]  funct7_EX;
+    
+    // [中文注释] 预留分支预测信息到 EX 段
+    wire        pred_taken_EX;
+    wire [31:0] pred_pc_EX;
 
+    // [中文注释] id_ex_reg 受 id_ex_en 控制（Cache 停顿），flush 受到 load_use_stall 或 分支预测冲刷 的控制
     seg_reg id_ex_reg (
-        .clk(clk), .rst(rst), .en(global_en), .stall(id_ex_stall), .flush(id_ex_flush),
+        .clk(clk), .rst(rst), .en(global_en & id_ex_en), .flush(id_ex_flush),
         .pc_in(pc_ID), .inst_in(inst_ID), .pc_plus_4_in(pc_plus_4_ID), .commit_in(commit_ID),
-        .rs1_in(rs1_ID), .rs2_in(rs2_ID), .rd_in(rd_ID), .imm_in(imm_ID),
-        .rf_rdata1_in(forwarded_rf_rdata1_ID), .rf_rdata2_in(forwarded_rf_rdata2_ID),
+        .rs1_in(rs1_ID), .rs2_in(rs2_ID), .rd_in(rd_ID), .imm_in(imm_ID), .rf_rdata1_in(forwarded_rf_rdata1_ID), .rf_rdata2_in(forwarded_rf_rdata2_ID),
         .rf_we_in(rf_we_ID), .wb_sel_in(wb_sel_ID), .alu_src_a_in(alu_src_a_ID), .alu_src_b_in(alu_src_b_ID),
         .alu_op_in(alu_op_ID), .cmp_op_in(cmp_op_ID), .mem_write_in(mem_write_ID), .mem_read_in(mem_read_ID), .is_jalr_in(is_jalr_ID), .halt_in(halt_ID),
         .opcode_in(opcode_ID), .funct3_in(funct3_ID), .funct7_in(funct7_ID),
+        .pred_taken_in(pred_taken_ID), .pred_pc_in(pred_pc_ID),
+        
         .pc_out(pc_EX), .inst_out(inst_EX), .pc_plus_4_out(pc_plus_4_EX), .commit_out(commit_EX),
         .rs1_out(rs1_EX), .rs2_out(rs2_EX), .rd_out(rd_EX), .imm_out(imm_EX), .rf_rdata1_out(rf_rdata1_EX), .rf_rdata2_out(rf_rdata2_EX),
         .rf_we_out(rf_we_EX), .wb_sel_out(wb_sel_EX), .alu_src_a_out(alu_src_a_EX), .alu_src_b_out(alu_src_b_EX),
         .alu_op_out(alu_op_EX), .cmp_op_out(cmp_op_EX), .mem_write_out(mem_write_EX), .mem_read_out(mem_read_EX), .is_jalr_out(is_jalr_EX), .halt_out(halt_EX),
         .opcode_out(opcode_EX), .funct3_out(funct3_EX), .funct7_out(funct7_EX),
+        .pred_taken_out(pred_taken_EX), .pred_pc_out(pred_pc_EX),
         // unused
         .pc_sel_in(1'b0), .cmp_res_in(1'b0), .alu_out_in(32'b0), .mem_read_data_in(32'b0),
         .pc_sel_out(), .cmp_res_out(), .alu_out_out(), .mem_read_data_out()
     );
 
     // ========================= EX Stage =========================
+    // 本阶段主要执行算术逻辑运算和分支比较，判断跳转并计算下一条指令地址
+    // 产生的主要信号和数据：ALU 运算结果 alu_out_EX，比较结果 cmp_res_EX，分支条件与跳转选择信号 pc_sel_EX，PC 新值 next_pc
+    
     wire [31:0] forwarded_rdata1_EX;
     wire [31:0] forwarded_rdata2_EX;
+
     wire [31:0] alu_in_a = alu_src_a_EX ? pc_EX : forwarded_rdata1_EX;
     wire [31:0] alu_in_b = alu_src_b_EX ? imm_EX : forwarded_rdata2_EX;
     wire [31:0] alu_out_EX;
+    wire [31:0] alu_out_raw_EX;
     wire        cmp_res_EX;
 
     alu u_alu (
         .a          (alu_in_a),
         .b          (alu_in_b),
         .op         (alu_op_EX),
-        .out        (alu_out_EX)
+        .out        (alu_out_raw_EX)
     );
 
     cmp u_cmp (
@@ -220,12 +244,61 @@ module CPU (
         .res        (cmp_res_EX)
     );
 
+    wire is_rv32m_EX = (opcode_EX == 7'b0110011) && (funct7_EX == 7'b0000001);
+    wire is_div_op_EX = is_rv32m_EX && (funct3_EX[2] == 1'b1);
+    wire div_signed_EX = is_div_op_EX && ((funct3_EX == 3'b100) || (funct3_EX == 3'b110));
+    wire div_rem_EX = is_div_op_EX && funct3_EX[1];
+    wire div_start;
+    wire div_busy;
+    wire div_done;
+    wire [31:0] div_result;
+    reg div_active;
+
+    assign div_start = global_en && is_div_op_EX && !div_active && !div_busy;
+
+    iter_div u_iter_div (
+        .clk        (clk),
+        .rst        (rst),
+        .start      (div_start),
+        .is_signed  (div_signed_EX),
+        .is_rem     (div_rem_EX),
+        .dividend   (forwarded_rdata1_EX),
+        .divisor    (forwarded_rdata2_EX),
+        .busy       (div_busy),
+        .done       (div_done),
+        .result     (div_result)
+    );
+
+    always @(posedge clk) begin
+        if (rst) begin
+            div_active <= 1'b0;
+        end
+        else if (div_start) begin
+            div_active <= 1'b1;
+        end
+        else if (div_done) begin
+            div_active <= 1'b0;
+        end
+    end
+
+    wire div_stall = is_div_op_EX && !div_done;
+    assign alu_out_EX = is_div_op_EX ? div_result : alu_out_raw_EX;
+
+    // 重新计算 pc_sel
     wire is_branch_EX = (opcode_EX == 7'b1100011);
     wire is_jal_EX    = (opcode_EX == 7'b1101111);
     wire pc_sel_EX    = is_branch_EX ? cmp_res_EX : (is_jal_EX | is_jalr_EX);
 
-    assign next_pc = pc_sel_EX ? (is_jalr_EX ? {alu_out_EX[31:1], 1'b0} : alu_out_EX)
-                               : pc_plus_4_IF;
+    // PC 更新逻辑 (当前已移至 IF 阶段使用 next_pc)
+    // [中文注释] 这里将 EX 段产生的真实的跳转结果传出，以便与之前 IF 段做出的预测比较
+    assign branch_actual_taken = pc_sel_EX;
+    wire [31:0] actual_target = pc_sel_EX ? (is_jalr_EX ? {alu_out_EX[31:1], 1'b0} : alu_out_EX) : pc_plus_4_EX;
+    assign branch_actual_target = actual_target;
+
+    // [中文注释] 如果是分支/跳转指令，并且实际的跳转决定或目标地址与之前的预测发生不符时，视为预测失败 (branch_mispredict)
+    wire branch_mispredict = (is_branch_EX | is_jal_EX | is_jalr_EX) & 
+                             ((branch_actual_taken != pred_taken_EX) || 
+                              (branch_actual_taken && (branch_actual_target != pred_pc_EX)));
 
     // ========================= EX/MEM Pipeline Register =========================
     wire [31:0] pc_MEM, inst_MEM, pc_plus_4_MEM, alu_out_MEM, rf_rdata2_MEM;
@@ -237,31 +310,33 @@ module CPU (
     wire [2:0]  funct3_MEM;
 
     seg_reg ex_mem_reg (
-        .clk(clk), .rst(rst), .en(global_en), .stall(ex_mem_stall), .flush(1'b0),
+        // [中文注释] ex_mem_reg 受 ex_mem_en 信号(即Cache停顿) 控制
+        .clk(clk), .rst(rst), .en(global_en & ex_mem_en), .flush(1'b0),
         .pc_in(pc_EX), .inst_in(inst_EX), .pc_plus_4_in(pc_plus_4_EX), .commit_in(commit_EX),
         .rd_in(rd_EX), .rf_rdata2_in(forwarded_rdata2_EX), .alu_out_in(alu_out_EX),
         .rf_we_in(rf_we_EX), .wb_sel_in(wb_sel_EX), .mem_write_in(mem_write_EX), .mem_read_in(mem_read_EX), .halt_in(halt_EX),
         .opcode_in(opcode_EX), .funct3_in(funct3_EX),
+
         .pc_out(pc_MEM), .inst_out(inst_MEM), .pc_plus_4_out(pc_plus_4_MEM), .commit_out(commit_MEM),
         .rd_out(rd_MEM), .rf_rdata2_out(rf_rdata2_MEM), .alu_out_out(alu_out_MEM),
         .rf_we_out(rf_we_MEM), .wb_sel_out(wb_sel_MEM), .mem_write_out(mem_write_MEM), .mem_read_out(mem_read_MEM), .halt_out(halt_MEM),
         .opcode_out(opcode_MEM), .funct3_out(funct3_MEM),
         // unused
         .rs1_in(5'b0), .rs2_in(5'b0), .imm_in(32'b0), .rf_rdata1_in(32'b0), .pc_sel_in(1'b0), .alu_src_a_in(1'b0), .alu_src_b_in(1'b0),
-        .alu_op_in(4'b0), .cmp_op_in(3'b0), .is_jalr_in(1'b0), .funct7_in(7'b0), .cmp_res_in(1'b0), .mem_read_data_in(32'b0),
+        .alu_op_in(5'b0), .cmp_op_in(3'b0), .is_jalr_in(1'b0), .funct7_in(7'b0), .cmp_res_in(1'b0), .mem_read_data_in(32'b0),
         .rs1_out(), .rs2_out(), .imm_out(), .rf_rdata1_out(), .pc_sel_out(), .alu_src_a_out(), .alu_src_b_out(),
         .alu_op_out(), .cmp_op_out(), .is_jalr_out(), .funct7_out(), .cmp_res_out(), .mem_read_data_out()
     );
 
-    // ========================= MEM Stage + Data Cache =========================
+    // ========================= MEM Stage =========================
+    // 本阶段主要处理数据存储器的读写逻辑，处理数据的字、半字、字节对齐及符号扩展
+    // 对于非访存指令，本部分透传
+    // 产生的主要信号和数据：数据内存访存数据与控制信号，读取后的结果 mem_read_data_processed_MEM
     wire [31:0] mem_read_data_processed_MEM;
     wire [31:0] ctrl_wdata_MEM;
     wire [ 3:0] ctrl_we_mask_MEM;
-    wire [31:0] dcache_rdata;
-    wire        dcache_miss;
-    wire        dcache_ready;
-    wire        mem_write_effective_MEM = mem_write_MEM && (|ctrl_we_mask_MEM);
-    wire        mem_access_MEM = mem_read_MEM || mem_write_effective_MEM;
+    wire [31:0] cache_rdata;
+    wire        cache_miss;
 
     data_mem_ctrl u_data_mem_ctrl (
         .addr       (alu_out_MEM),
@@ -269,84 +344,67 @@ module CPU (
         .mem_write  (mem_write_MEM),
         .mem_read   (mem_read_MEM),
         .wdata_in   (rf_rdata2_MEM),
-        .rdata_in   (dcache_rdata),
+        .rdata_in   (cache_rdata),
         .wdata_out  (ctrl_wdata_MEM),
         .we_mask    (ctrl_we_mask_MEM),
         .rdata_out  (mem_read_data_processed_MEM)
     );
 
-    reg dcache_req_active;
-    wire dcache_req_fire = global_en && mem_access_MEM && !dcache_req_active;
-    wire dcache_r_req = dcache_req_fire && mem_read_MEM;
-    wire dcache_w_req = dcache_req_fire && mem_write_effective_MEM;
-
-    always @(posedge clk) begin
-        if (rst) begin
-            dcache_req_active <= 1'b0;
-        end
-        else if (!global_en) begin
-            dcache_req_active <= 1'b0;
-        end
-        else if (!mem_access_MEM) begin
-            dcache_req_active <= 1'b0;
-        end
-        else if (dcache_ready) begin
-            // ready 周期说明本次 load/store 已完成，下一条进入 MEM 的访存可以重新发请求。
-            dcache_req_active <= 1'b0;
-        end
-        else if (dcache_req_fire) begin
-            // 首次进入 MEM 的访存指令只发起一次 Cache 请求，随后由 dcache_req_active 维持等待状态。
-            dcache_req_active <= 1'b1;
-        end
-    end
+    // 数据存储器地址字对齐（低 2 位清零）
+    wire [31:0] dmem_addr = {alu_out_MEM[31:2], 2'b00};
+    wire [31:0] dmem_wdata = ctrl_wdata_MEM;
 
     cache #(
-        .ADDR_WIDTH        (32),
-        .DATA_WIDTH        (32),
-        .INDEX_WIDTH       (3),
-        .WAY_NUM           (2),
-        // DCache 已固定为纯 LRU 替换策略，删除多策略参数以避免保留无用控制逻辑。
-        .LINE_OFFSET_WIDTH (2)
-    ) u_dcache (
+        .ADDR_WIDTH(32),
+        .DATA_WIDTH(32),
+        .INDEX_WIDTH(3),
+        .WAY_NUM(2),
+        .LINE_OFFSET_WIDTH(2)
+    ) dcache (
         .clk        (clk),
-        // PDU 调试写 DMEM 完成后显式 flush 数据 Cache。
-        // 写直达策略保证 Cache 没有脏行；flush 只用于避免 PDU 修改后端 DMEM 后 CPU 继续命中旧 Cache 行。
-        .rstn       (~rst && ~cache_flush),
-        .addr       (alu_out_MEM),
-        .r_req      (dcache_r_req),
-        .w_req      (dcache_w_req),
-        .w_data     (ctrl_wdata_MEM),
+        .rstn       (~rst),
+        .addr       (dmem_addr),
+        .r_req      (mem_read_MEM && global_en),
+        .w_req      (mem_write_MEM && (|ctrl_we_mask_MEM) && global_en),
+        .w_data     (dmem_wdata),
         .w_mask     (ctrl_we_mask_MEM),
-        .r_data     (dcache_rdata),
-        .miss       (dcache_miss),
-        .ready      (dcache_ready),
-        .mem_r      (dmem_mem_r),
-        .mem_w      (dmem_mem_w),
-        .mem_addr   (dmem_mem_addr),
-        .mem_w_data (dmem_mem_wdata),
-        .mem_r_data (dmem_mem_rdata),
-        .mem_ready  (dmem_mem_ready)
-    );
+        .r_data     (cache_rdata),
+        .miss       (cache_miss),
 
-    assign dcache_wait = mem_access_MEM && (dcache_req_fire || dcache_req_active || dcache_miss) && !dcache_ready;
+        .mem_r      (cache_mem_r),
+        .mem_w      (cache_mem_w),
+        .mem_addr   (cache_mem_addr),
+        .mem_w_data (cache_mem_w_data),
+        .mem_r_data (cache_mem_r_data),
+        .mem_ready  (cache_mem_ready),
+
+        .cache_flush     (cache_flush),
+        .cache_flush_done(cache_flush_done)
+    );
 
     // ========================= MEM/WB Pipeline Register =========================
     wire [31:0] pc_WB, inst_WB, pc_plus_4_WB, alu_out_WB, mem_read_data_WB;
     wire        commit_WB;
     wire [1:0]  wb_sel_WB;
     wire        halt_WB;
+    wire        mem_write_WB;
+    wire [3:0]  ctrl_we_mask_WB;   // 为生成 debug_commit_dmem_we 信号，需要把访存掩码一并传递以判断是否发生了内存写入
+    wire [31:0] dmem_addr_WB;
+    wire [31:0] dmem_wdata_WB;
 
     seg_reg mem_wb_reg (
-        .clk(clk), .rst(rst), .en(global_en), .stall(mem_wb_stall), .flush(1'b0),
+        // [中文注释] mem_wb_reg 受 mem_wb_en 信号控制（发生 Cache 停顿时也要冻结此段数据）
+        .clk(clk), .rst(rst), .en(global_en & mem_wb_en), .flush(1'b0),
         .pc_in(pc_MEM), .inst_in(inst_MEM), .pc_plus_4_in(pc_plus_4_MEM), .commit_in(commit_MEM),
         .rd_in(rd_MEM), .alu_out_in(alu_out_MEM), .mem_read_data_in(mem_read_data_processed_MEM),
         .rf_we_in(rf_we_MEM), .wb_sel_in(wb_sel_MEM), .halt_in(halt_MEM),
+
         .pc_out(pc_WB), .inst_out(inst_WB), .pc_plus_4_out(pc_plus_4_WB), .commit_out(commit_WB),
         .rd_out(rd_WB), .alu_out_out(alu_out_WB), .mem_read_data_out(mem_read_data_WB),
         .rf_we_out(rf_we_WB), .wb_sel_out(wb_sel_WB), .halt_out(halt_WB),
         // unused
         .rs1_in(5'b0), .rs2_in(5'b0), .imm_in(32'b0), .rf_rdata1_in(32'b0), .rf_rdata2_in(32'b0),
-        .pc_sel_in(1'b0), .alu_src_a_in(1'b0), .alu_src_b_in(1'b0), .alu_op_in(4'b0), .cmp_op_in(3'b0),
+        .pc_sel_in(1'b0), .alu_src_a_in(1'b0), .alu_src_b_in(1'b0), .alu_op_in(5'b0), .cmp_op_in(3'b0),
         .mem_write_in(1'b0), .mem_read_in(1'b0), .is_jalr_in(1'b0), .opcode_in(7'b0), .funct3_in(3'b0), .funct7_in(7'b0), .cmp_res_in(1'b0),
         .rs1_out(), .rs2_out(), .imm_out(), .rf_rdata1_out(), .rf_rdata2_out(),
         .pc_sel_out(), .alu_src_a_out(), .alu_src_b_out(), .alu_op_out(), .cmp_op_out(),
@@ -354,6 +412,8 @@ module CPU (
     );
 
     // ========================= WB Stage =========================
+    // 本阶段主要选择并确定需要写回寄存器堆的数据
+    // 产生的主要信号和数据：最终要写回寄存器的数据 rf_wdata_WB，同时在这里收集调试用的 commit 信号
     assign rf_wdata_WB = (wb_sel_WB == 2'b00) ? alu_out_WB :
                          (wb_sel_WB == 2'b01) ? mem_read_data_WB :
                          (wb_sel_WB == 2'b10) ? pc_plus_4_WB : 32'b0;
@@ -367,14 +427,14 @@ module CPU (
             commit_dmem_wa_r <= 32'b0;
             commit_dmem_wd_r <= 32'b0;
         end
-        else if (global_en && !dcache_wait) begin
-            // 只有 Cache 事务完成并允许流水线前进时，才采样本条 MEM 指令的调试访存信息。
-            commit_dmem_we_r <= mem_write_effective_MEM;
-            commit_dmem_wa_r <= mem_access_MEM ? {alu_out_MEM[31:2], 2'b00} : `DATA_MEM_START;
-            commit_dmem_wd_r <= mem_write_effective_MEM ? ctrl_wdata_MEM : 32'b0;
+        else if (global_en && !full_pipeline_stall) begin
+            commit_dmem_we_r <= mem_write_MEM && (|ctrl_we_mask_MEM);
+            commit_dmem_wa_r <= (mem_read_MEM || mem_write_MEM) ? dmem_addr : `DATA_MEM_START;
+            commit_dmem_wd_r <= (mem_write_MEM && (|ctrl_we_mask_MEM)) ? dmem_wdata : 32'b0;
         end
     end
 
+    // ========================= Commit（调试信号） =========================
     reg  [ 0 : 0]   commit_reg          ;
     reg  [31 : 0]   commit_pc_reg       ;
     reg  [31 : 0]   commit_instr_reg    ;
@@ -386,8 +446,7 @@ module CPU (
     reg  [31 : 0]   commit_dmem_wa_reg  ;
     reg  [31 : 0]   commit_dmem_wd_reg  ;
 
-    assign commit_advance = global_en && !dcache_wait;
-
+    // 各个 commit 信号输出跟随 WB 段后结果
     always @(posedge clk) begin
         if (rst) begin
             commit_reg          <= 1'b0;
@@ -401,7 +460,7 @@ module CPU (
             commit_dmem_wa_reg  <= 32'b0;
             commit_dmem_wd_reg  <= 32'b0;
         end
-        else if (commit_advance) begin
+        else if (global_en && !full_pipeline_stall) begin
             commit_reg          <= commit_WB;
             commit_pc_reg       <= pc_WB;
             commit_instr_reg    <= inst_WB;
@@ -414,7 +473,6 @@ module CPU (
             commit_dmem_wd_reg  <= commit_dmem_wd_r;
         end
         else begin
-            // Cache miss 或 PDU 暂停期间不产生新的 commit 脉冲。
             commit_reg <= 1'b0;
         end
     end
@@ -431,48 +489,75 @@ module CPU (
     assign commit_dmem_wd   = commit_dmem_wd_reg;
 
     // ========================= Forwarding Unit =========================
-    wire [1:0] forward_a;
+    wire [1:0] forward_a;   // 00-寄存器堆，01-上一条指令的 ALU 计算结果，10-上两条指令的写回数据
     wire [1:0] forward_b;
-    wire [31:0] rf_wdata_MEM;
+    wire [31:0] rf_wdata_MEM;   // MEM 阶段可确定的对寄存器堆的写回值
 
+    // 回顾 wb_sel：00-ALU 运算结果，01-访存结果，10-PC+4
+    // 如果 wb_sel 选通 01，则需要通过 stall 信号停顿一拍再前递
     assign rf_wdata_MEM = (wb_sel_MEM == 2'b00) ? alu_out_MEM :
                           (wb_sel_MEM == 2'b10) ? pc_plus_4_MEM : 32'b0;
 
+    // 需要首先检查上一条指令（位于 MEM 阶段）是否对当前指令涉及的寄存器有修改，再检查上两条指令（位于 WB 阶段）
+    // 判定条件：有对寄存器堆的写入->不是写入 x0 寄存器->写入的寄存器号与当前指令需要使用的寄存器号匹配
     assign forward_a = (rf_we_MEM && rd_MEM != 5'd0 && rd_MEM == rs1_EX) ? 2'b10 :
-                       (rf_we_WB  && rd_WB  != 5'd0 && rd_WB  == rs1_EX) ? 2'b01 : 2'b00;
-    assign forward_b = (rf_we_MEM && rd_MEM != 5'd0 && rd_MEM == rs2_EX) ? 2'b10 :
-                       (rf_we_WB  && rd_WB  != 5'd0 && rd_WB  == rs2_EX) ? 2'b01 : 2'b00;
+                       (rf_we_WB && rd_WB != 5'd0 && rd_WB == rs1_EX) ? 2'b01 : 2'b00;
 
+    assign forward_b = (rf_we_MEM && rd_MEM != 5'd0 && rd_MEM == rs2_EX) ? 2'b10 :
+                       (rf_we_WB && rd_WB != 5'd0 && rd_WB == rs2_EX) ? 2'b01 : 2'b00;
+
+    // 利用 forward_a/b 信号选择理论上正确的寄存器端口输出
     assign forwarded_rdata1_EX = (forward_a == 2'b10) ? rf_wdata_MEM :
                                  (forward_a == 2'b01) ? rf_wdata_WB  :
                                  rf_rdata1_EX;
+
     assign forwarded_rdata2_EX = (forward_b == 2'b10) ? rf_wdata_MEM :
                                  (forward_b == 2'b01) ? rf_wdata_WB  :
                                  rf_rdata2_EX;
 
-    assign forwarded_rf_rdata1_ID =
-        (rf_we_WB && rd_WB != 5'd0 && rs1_ID == rd_WB) ? rf_wdata_WB : rf_rdata1_ID;
-    assign forwarded_rf_rdata2_ID =
-        (rf_we_WB && rd_WB != 5'd0 && rs2_ID == rd_WB) ? rf_wdata_WB : rf_rdata2_ID;
-
+    assign forwarded_rf_rdata1_ID = (rf_we_WB && rd_WB != 5'd0 && rs1_ID == rd_WB) ? 
+                                    rf_wdata_WB : rf_rdata1_ID;
+    
+    assign forwarded_rf_rdata2_ID = (rf_we_WB && rd_WB != 5'd0 && rs2_ID == rd_WB) ? 
+                                    rf_wdata_WB : rf_rdata2_ID;
+                                 
     // ========================= Hazard Detection Unit =========================
+    
+    // BRANCH 和 STORE 指令虽然 alu_src 信号标记为使用 PC/imm，
+    // 但它们仍需读取 rs1/rs2 的值（BRANCH 用于比较，STORE 的 rs2 用于写入数据）
     wire is_branch_ID = (opcode_ID == 7'b1100011);
     wire is_store_ID  = (opcode_ID == 7'b0100011);
 
-    wire load_use_hazard = mem_read_EX && (rd_EX != 5'd0)
+    // 冒险检测：当前位于 EX(3) 阶段的指令将要读内存，且读出的值要存入的寄存器就是 ID(2) 阶段指令要读取的寄存器
+    wire load_use_hazard = mem_read_EX && (rd_EX != 5'd0) 
                        && ((rd_EX == rs1_ID && (!alu_src_a_ID || is_branch_ID))
                        ||  (rd_EX == rs2_ID && (!alu_src_b_ID || is_branch_ID || is_store_ID)));
+    
+    // 如果当前指令需要跳转（pc_sel_EX = 1），就需要刷新取错的指令 (原Lab4逻辑，由于引入预测，改在之前判定branch_mispredict)
+    // wire control_hazard = pc_sel_EX;
 
-    wire control_hazard = pc_sel_EX;
-
-    // Cache 等待优先级最高：等待期间所有段寄存器保持原值，不能执行 flush。
-    assign pc_stall    = load_use_hazard || dcache_wait;
-    assign if_id_stall = load_use_hazard || dcache_wait;
-    assign id_ex_stall = dcache_wait;
-    assign ex_mem_stall = dcache_wait;
-    assign mem_wb_stall = dcache_wait;
-
-    assign if_id_flush = (!dcache_wait) && control_hazard;
-    assign id_ex_flush = (!dcache_wait) && (load_use_hazard || control_hazard);
+    // ========================= Cache & Branch 兼容全局控制 =========================
+    // 优先级 1: 多周期执行单元与 Cache Miss Stall
+    wire cache_stall = cache_miss;
+    wire full_pipeline_stall = cache_stall | execute_stall;
+    
+    // 优先级 2 & 3: Branch Mispredict & Load-Use Hazard
+    wire load_use_stall = load_use_hazard;
+    wire execute_stall = div_stall;
+    
+    // [中文注释] PC 寄存器控制：Cache miss、多周期除法或 Load-use hazard 时均锁定 PC
+    wire pc_en = ~(full_pipeline_stall | load_use_stall);
+    
+    // [中文注释] IF/ID 寄存器控制：遇到停顿时锁定。如果在 EX 发现预测错误，则清空冲刷
+    wire if_id_en = ~(full_pipeline_stall | load_use_stall);
+    wire if_id_flush = branch_mispredict & ~full_pipeline_stall;
+    
+    // [中文注释] ID/EX 寄存器控制：Cache 或多周期除法停顿时冻结。Load-use 或分支预测错误时插入气泡。
+    wire id_ex_en = ~full_pipeline_stall;
+    wire id_ex_flush = (load_use_stall | branch_mispredict) & ~full_pipeline_stall;
+    
+    // [中文注释] EX/MEM 和 MEM/WB 寄存器控制：Cache 或多周期除法停顿时冻结
+    wire ex_mem_en = ~full_pipeline_stall;
+    wire mem_wb_en = ~full_pipeline_stall;
 
 endmodule
