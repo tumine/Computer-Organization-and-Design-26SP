@@ -45,23 +45,24 @@
 
 
 .text
+lui t0, 0x10010
 # First we calculate some useful constants
 # Shape of A
-lw s0, 4(x0) # R_A
-lw s1, 8(x0) # C_A
+lw s0, 4(t0) # R_A
+lw s1, 8(t0) # C_A
 # Shape of B
-lw a0, 16(x0) # R_B
-lw a1, 20(x0) # C_B
+lw a0, 16(t0) # R_B
+lw a1, 20(t0) # C_B
 
 # a2 stores base address of A
-addi a2, x0, 0x18 
+addi a2, t0, 0x18 
 # a3 stores base address of B
-lw a3, 0(x0)	# size of A
+lw a3, 0(t0)	# size of A
 add a3, a3, a3
 add a3, a3, a3	# a3 *= 4
 add a3, a3, a2	
 # a4 stores base address of C
-lw a4, 12(x0)	# size of B
+lw a4, 12(t0)	# size of B
 add a4, a4, a4
 add a4, a4, a4  # a4 *= 4
 add a4, a4, a3 
@@ -152,9 +153,9 @@ Mul_init:
 	blt x0, t4, Mul_start
 	blt t3, x0, Mul_make_pos
 	# t3 > 0 and t4 < 0, SWAP
-	add t6, t3, t0
-	add t3, t4, t0
-	add t4, t6, t0
+	add t6, t3, x0
+	add t3, t4, x0
+	add t4, t6, x0
 	beq x0, x0, Mul_start
 Mul_make_pos:	 	
 	# t3 < 0 and t4 < 0, make postive
