@@ -173,7 +173,7 @@ module choice_predictor #(
 );
     localparam integer CHOICE_ENTRIES = (1 << PC_IDX_W); // 竞争表项数
 
-    reg [1:0] choice_pht [0:CHOICE_ENTRIES-1];          // 竞争表，通常包含 2-bit 状态机
+    reg [1:0] choice_pht [0:CHOICE_ENTRIES-1];          // 竞争表，包含 2-bit 状态机
     integer i;
 
     // 竞争表 2-bit 状态机更新函数

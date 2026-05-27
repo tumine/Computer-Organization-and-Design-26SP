@@ -186,7 +186,7 @@ module CPU (
 
     regfile u_regfile (
         .clk        (clk),
-        // Cache 等待期间 WB 段保持不变，写使能也必须冻结，否则同一条指令会重复写寄存器堆。
+        // Cache 等待期间 WB 段保持不变，需要关闭寄存器堆写使能
         .we         (rf_we_WB && global_en && !dcache_wait),
         .rs1        (rs1_ID),
         .rs2        (rs2_ID),
@@ -207,7 +207,6 @@ module CPU (
     wire [1:0]  wb_sel_ID;
     wire        alu_src_a_ID;
     wire        alu_src_b_ID;
-    // RV32M 裁剪后 ALU 仅保留 RV32I 基础操作，4 位控制码即可覆盖，减少流水线控制位宽。
     wire [3:0]  alu_op_ID;
     wire [2:0]  cmp_op_ID;
     wire        mem_write_ID;
@@ -301,10 +300,10 @@ module CPU (
     assign actual_target_EX = is_jalr_EX ? {alu_out_EX[31:1], 1'b0} : alu_out_EX;
     wire pc_sel_EX    = actual_taken_EX;
 
-    // EX 阶段给出最终控制流裁决。bp_used_EX 记录“这条指令在 IF 阶段是否真的使用过预测器”：
-    // - 使用过预测器时，只在预测方向错误或 JALR 需要 EX 解析目标时 redirect；
-    // - 没使用预测器时，完全回退到无预测基线，真实 taken/JAL/JALR 在 EX 统一跳转并冲刷流水线。
-    // 这样可以在运行中切换 branch_predictor_disable 时仍按每条指令自己的取指模式收尾，避免半预测状态污染控制流。
+    // EX 段得到最终控制流
+    // bp_used_EX 记录“这条指令在 IF 段是否真的使用过预测器”
+    // - 使用过预测器时，只在预测方向错误或 JALR 需要 EX 解析目标时重定向控制流
+    // - 未使用预测器时，按旧有 CPU 执行通路，在实际发生跳转时进行流水线冲刷
     assign control_redirect_valid = bp_used_EX ? bp_redirect_valid : (commit_EX && actual_taken_EX);
     assign control_redirect_pc = actual_taken_EX ? actual_target_EX : pc_plus_4_EX;
 
@@ -376,11 +375,11 @@ module CPU (
             dcache_req_active <= 1'b0;
         end
         else if (dcache_ready) begin
-            // ready 周期说明本次 load/store 已完成，下一条进入 MEM 的访存可以重新发请求。
+            // ready 周期说明本次 load/store 已完成，可以执行下一条进入 MEM 段的访存指令
             dcache_req_active <= 1'b0;
         end
         else if (dcache_req_fire) begin
-            // 首次进入 MEM 的访存指令只发起一次 Cache 请求，随后由 dcache_req_active 维持等待状态。
+            // 首次进入 MEM 的访存指令只发起一次 Cache 请求，随后由 dcache_req_active 维持等待状态
             dcache_req_active <= 1'b1;
         end
     end
@@ -390,12 +389,11 @@ module CPU (
         .DATA_WIDTH        (32),
         .INDEX_WIDTH       (3),
         .WAY_NUM           (2),
-        // DCache 已固定为纯 LRU 替换策略，删除多策略参数以避免保留无用控制逻辑。
         .LINE_OFFSET_WIDTH (2)
     ) u_dcache (
         .clk        (clk),
-        // PDU 调试写 DMEM 完成后显式 flush 数据 Cache。
-        // 写直达策略保证 Cache 没有脏行；flush 只用于避免 PDU 修改后端 DMEM 后 CPU 继续命中旧 Cache 行。
+        // PDU 调试写 DMEM 完成后显式 flush 数据 Cache
+        // 写直达策略保证 Cache 没有脏行；flush 只用于避免 PDU 修改后端 DMEM 后 CPU 继续命中旧 Cache 行
         .rstn       (~rst && ~cache_flush),
         .addr       (alu_out_MEM),
         .r_req      (dcache_r_req),
@@ -453,7 +451,7 @@ module CPU (
             commit_dmem_wd_r <= 32'b0;
         end
         else if (global_en && !dcache_wait) begin
-            // 只有 Cache 事务完成并允许流水线前进时，才采样本条 MEM 指令的调试访存信息。
+            // Cache 就绪（完成上一条访存指令）后再采样本条 MEM 指令的调试访存信息
             commit_dmem_we_r <= mem_write_effective_MEM;
             commit_dmem_wa_r <= mem_access_MEM ? {alu_out_MEM[31:2], 2'b00} : `DATA_MEM_START;
             commit_dmem_wd_r <= mem_write_effective_MEM ? ctrl_wdata_MEM : 32'b0;
@@ -499,7 +497,7 @@ module CPU (
             commit_dmem_wd_reg  <= commit_dmem_wd_r;
         end
         else begin
-            // Cache miss 或 PDU 暂停期间不产生新的 commit 脉冲。
+            // Cache miss 或 PDU 暂停期间不产生新的 commit 信号
             commit_reg <= 1'b0;
         end
     end
@@ -516,9 +514,9 @@ module CPU (
     assign commit_dmem_wd   = commit_dmem_wd_reg;
 
     // ========================= Benchmark Timer =========================
-    // 基准测试计时器工作在 CPU 时钟域，计数单位是 cpu_clk 周期。
-    // Start：PDU arm 后，CPU 第一次在 global_en 且 PC 未停驻的周期真正接收第一条取指。
-    // Stop ：最后一条 EBREAK 在 WB 阶段退休的同一拍，直接使用 commit_WB/halt_WB，避免 TOP 外部 commit_halt 晚一拍。
+    // 基准测试计时器工作在 CPU 时钟域，计数单位是 cpu_clk 周期
+    // Start：PDU arm 后，CPU 第一次在 global_en 且 PC 未停驻的周期真正接收第一条取指
+    // Stop ：最后一条 EBREAK 在 WB 阶段退休的同一拍，直接使用 commit_WB/halt_WB，避免 TOP 外部 commit_halt 晚一拍
     reg benchmark_running_reg;
     reg benchmark_done_reg;
     reg [31:0] benchmark_cycles_reg;
@@ -535,11 +533,11 @@ module CPU (
             benchmark_clear_ack_reg <= 1'b0;
         end
         else if (benchmark_clear) begin
-            // PDU 在发起 brun 前先清空旧结果；ack 是 CPU 域保持型应答，供 TOP/CPU_ctrl 跨域回收 clear 请求。
+            // PDU 在发起 brun 前清空旧结果
             benchmark_running_reg <= 1'b0;
             benchmark_done_reg <= 1'b0;
             benchmark_cycles_reg <= 32'b0;
-            benchmark_clear_ack_reg <= 1'b1;
+            benchmark_clear_ack_reg <= 1'b1;    // 供 PDU 确认正常复位
         end
         else begin
             benchmark_clear_ack_reg <= 1'b0;

@@ -36,7 +36,6 @@ module cache #(
     input                         mem_ready   // 主存事务完成脉冲
 );
 
-    // 基本参数。SPACE_OFFSET 是字节地址低位偏移，例如 32 位字为 2 位。
     function integer clog2;
         input integer value;
         begin
@@ -49,7 +48,7 @@ module cache #(
 
     localparam LINE_WORDS     = (1 << LINE_OFFSET_WIDTH);
     localparam LINE_WIDTH     = DATA_WIDTH * LINE_WORDS;
-    localparam SPACE_OFFSET   = clog2(DATA_WIDTH / 8);
+    localparam SPACE_OFFSET   = clog2(DATA_WIDTH / 8);      // 字节地址低位偏移
     localparam TAG_WIDTH      = ADDR_WIDTH - INDEX_WIDTH - LINE_OFFSET_WIDTH - SPACE_OFFSET;
     localparam SET_NUM        = (1 << INDEX_WIDTH);
     localparam WAY_NUM_WIDTH  = (WAY_NUM > 1) ? clog2(WAY_NUM) : 1;
@@ -69,7 +68,7 @@ module cache #(
     reg [31:0]             addr_buf;
     reg [31:0]             w_data_buf;
     reg [ 3:0]             w_mask_buf;
-    reg                    op_is_write;     // 1-store，0-load
+    reg                    op_is_write;     // 1-store, 0-load
     reg [LINE_WIDTH-1:0]   ret_buf;         // 主存 miss 读回的整条 Cache Line
     reg [LINE_WIDTH-1:0]   write_line_buf;  // 写直达阶段要写回主存的整条 Cache Line
 
@@ -120,6 +119,7 @@ module cache #(
     reg                   data_we[0:WAY_NUM-1];
     reg  [LINE_WIDTH-1:0] cache_write_line;
 
+    // 例化每个 Way 上的 Tag/Data BRAM
     genvar way_id;
     generate
         for (way_id = 0; way_id < WAY_NUM; way_id = way_id + 1) begin : ways
@@ -153,7 +153,7 @@ module cache #(
         end
     endgenerate
 
-    // 命中路选择和总命中信号
+    // Way 命中信号、总命中信号，命中 Way 编号
     integer j;
     reg [WAY_NUM_WIDTH-1:0] hit_way_id;
     reg hit;
@@ -169,7 +169,7 @@ module cache #(
     end
 
     // LRU 替换策略
-    // lru_age 越小表示越新，等于 WAY_NUM-1 的路在所有路有效时优先被替换
+    // lru_age 等于 WAY_NUM-1 的路在所有路有效时优先被替换
     reg [WAY_NUM_WIDTH-1:0] replace_way;
     reg [WAY_NUM_WIDTH-1:0] lru_age [0:SET_NUM-1][0:WAY_NUM-1];
 
@@ -178,7 +178,7 @@ module cache #(
         replace_way = {WAY_NUM_WIDTH{1'b0}};
         found_invalid = 1'b0;
 
-        // invalid way 不会带来有效数据丢失，优先使用；只有组内全 valid 时才走 LRU 替换
+        // 优先使用 invalid way
         for (j = 0; j < WAY_NUM; j = j + 1) begin
             if (!valid[j] && !found_invalid) begin
                 replace_way = j[WAY_NUM_WIDTH-1:0];
@@ -369,7 +369,7 @@ module cache #(
                 end
             end
             STATE_W_THROUGH: begin
-                // 写直达阶段把更新后的整条 Cache Line 写回 DMEM
+                // 写直达阶段，把更新后的整条 Cache Line 写回 DMEM
                 mem_w      = !mem_ready;
                 mem_addr   = line_addr;
                 mem_w_data = write_line_buf;
@@ -385,7 +385,7 @@ module cache #(
 
 endmodule
 
-// 简单参数化 BRAM：异步读、同步写，rstn 初始化为 0
+// 参数化 BRAM：异步读、同步写，rstn 初始化为 0
 module bram #(
     parameter ADDR_WIDTH = 4,
     parameter DATA_WIDTH = 32
