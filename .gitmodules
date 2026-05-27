@@ -1,0 +1,4 @@
+[submodule "Labs/Lab6/PDU_v3"]
+	path = Labs/Lab6/PDU_v3
+	url = https://github.com/tumine/PDU_v3.git
+	branch = lab6-cache
